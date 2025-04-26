@@ -49,6 +49,11 @@ class UnitreeGo2Env(BaseEnv):
             "gallop": torch.tensor([0.3, 3.5, 0.10]),
         }
 
+        self._torso_idx = self.robot.base_link.idx
+
+        self._init_q = torch.tensor(self.model.keyframe("home").qpos)
+        self._default_pose = self.model.keyframe("home").qpos[7:]
+        
         self.joint_range = torch.tensor(
             [
                 [-0.5, 0.5],
