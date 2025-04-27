@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 from typing import Any, Dict, Sequence, Tuple, Union, List
 
-from functools import partial
-
 import genesis as gs
 import torch
 
@@ -86,10 +84,45 @@ class BaseEnv:
     #    self._nq2 = self.model.nq
 
         self._nv = self.robot.n_dofs   
-        self._nq = self.robot.n_qs   
+        self._nq = self.robot.n_qs
+        
+        #verificare se è corretto, forse usando tau direttamete da act2tau, non serve questo
+        self.robot.set_dofs_kp([self._config.kp] * len(self.motor_dofs), self.motor_dofs)
+        self.robot.set_dofs_kv([self._config.kd] * len(self.motor_dofs), self.motor_dofs)
 
     def create_robot(self):
         """
         Add the robot to the environment. Called in BaseEnv.__init__.
         """
         raise NotImplementedError
+
+    def act2joint(self, act: torch.Tensor) -> torch.Tensor:
+        # act: (n_envs, n_actions) or (n_actions,) -> joint positions
+        # normalize to [0,1]
+        act_normalized = (act * self._config.action_scale + 1.0) / 2.0
+        # joint_range: (n_actions, 2)
+        lower = self.joint_range[:, 0]
+        upper = self.joint_range[:, 1]
+        # compute targets, broadcasting over batch
+        joint_targets = lower + act_normalized * (upper - lower)
+        # clamp to physical_joint_range
+        phys_lower = self.physical_joint_range[:, 0]
+        phys_upper = self.physical_joint_range[:, 1]
+        joint_targets = torch.clamp(joint_targets, phys_lower, phys_upper)
+        return joint_targets
+
+    def act2tau(self, act: torch.Tensor, state) -> torch.Tensor:
+        # compute desired joint positions
+        joint_target = self.act2joint(act)
+        # extract actual joint qpos and qvel (skip free-joint dims)
+        q = state.qpos[..., 7:7 + joint_target.shape[-1]]
+        qd = state.qvel[..., 6:6 + joint_target.shape[-1]]
+        # PD control: tau = kp * error - kd * velocity
+        q_err = joint_target - q
+        tau = self._config.kp * q_err - self._config.kd * qd
+        # clamp to torque limits
+        lower_tau = self.joint_torque_range[:, 0]
+        upper_tau = self.joint_torque_range[:, 1]
+        tau = torch.clamp(tau, lower_tau, upper_tau)
+        return tau
+

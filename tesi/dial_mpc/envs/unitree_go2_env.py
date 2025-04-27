@@ -26,6 +26,15 @@ class UnitreeGo2EnvConfig(BaseEnvConfig):
     gait: str = "trot"
     n_envs: int = 1
 
+@dataclass
+class State:
+    sim_state: Any
+    obs: torch.Tensor
+    reward: torch.Tensor
+    done: torch.Tensor
+    metrics: Dict[str, torch.Tensor]
+    info: Dict[str, torch.Tensor]
+
 class UnitreeGo2Env(BaseEnv):
     def __init__(self, config: UnitreeGo2EnvConfig):
         super().__init__(config)
@@ -95,7 +104,6 @@ class UnitreeGo2Env(BaseEnv):
     '''
 
     def create_robot(self):
-
         dof_names = [
             "FR_hip_joint",
             "FR_thigh_joint",
@@ -116,3 +124,92 @@ class UnitreeGo2Env(BaseEnv):
         self.robot = self.scene.add_entity(gs.morphs.MJCF(file=str(model_path)))
 
         self.motor_dofs: list[int] = [self.robot.get_joint(name).dof_idx_local for name in dof_names]
+
+    def pipeline_init(self, init_q: torch.Tensor, init_qvel: torch.Tensor, envs_idx: torch.Tensor = None):
+        """
+        Initialize the simulation pipeline state in Genesis, analogous to Brax's pipeline_init.
+        """
+        # environment indices for batched envs; reset only these indices
+        b = envs_idx.numel()
+        # split init_q into base position, orientation, and joint positions
+        base_pos = init_q[:3]
+        base_quat = init_q[3:7]
+        joint_pos = init_q[7:]
+        # set base pose
+        self.robot.set_pos(
+            base_pos.unsqueeze(0).repeat(b, 1),
+            zero_velocity=True,
+            envs_idx=envs_idx,
+        )
+        self.robot.set_quat(
+            base_quat.unsqueeze(0).repeat(b, 1),
+            zero_velocity=True,
+            envs_idx=envs_idx,
+        )
+        # set joint positions
+        self.robot.set_dofs_position(
+            position=joint_pos.unsqueeze(0).repeat(b, 1),
+            dofs_idx_local=self.motor_dofs,
+            zero_velocity=True,
+            envs_idx=envs_idx,
+        )
+        # zero joint velocities
+        self.robot.zero_all_dofs_velocity(envs_idx)
+        # step the scene once to compute forward kinematics, contacts, etc.
+        self.scene.step()
+        # return the fresh simulation state
+        return self.scene.get_state()
+
+    def reset(self, envs_idx: torch.Tensor = None) -> State:
+        """Reset whole or part of the batch of environments."""
+        # default to all envs
+        b = envs_idx.numel()
+        # reinitialize selected envs
+        sim_state = self.pipeline_init(
+            self._init_q,
+            torch.zeros(self._nv),
+            envs_idx,
+        )
+        # build initial info per env
+        state_info = {
+            'pos_tar': torch.tensor([0.282, 0.0, 0.3]).unsqueeze(0).repeat(b, 1),
+            'vel_tar': torch.zeros(b, 3),
+            'ang_vel_tar': torch.zeros(b, 3),
+            'yaw_tar': torch.zeros(b),
+            'step': torch.zeros(b, dtype=torch.int64),
+            'z_feet': torch.zeros(b, 4),
+            'z_feet_tar': torch.zeros(b, 4),
+            'randomize_target': torch.full((b,), self._config.randomize_tasks, dtype=torch.bool),
+            'last_contact': torch.zeros(b, 4, dtype=torch.bool),
+            'feet_air_time': torch.zeros(b, 4),
+        }
+        # compute initial observation
+        #obs = self._get_obs(sim_state, state_info)
+        obs = torch.zeros(b, 12)
+        # reward and done flags
+        reward = torch.zeros(b)
+        done = torch.zeros(b)
+        # return state
+        return State(sim_state, obs, reward, done, {}, state_info)
+
+    def sample_command(self, envs_idx) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Sample linear and angular velocity commands for environments that needs it.
+        Returns two tensors of shape (lenght of envs_idx, 3): (lin_vel_cmd, ang_vel_cmd).
+        """
+        # hardcoded ranges (min,max) for linear and angular velocity
+        min_lin_x, max_lin_x = -1.5, 1.5  # [m/s]
+        min_lin_y, max_lin_y = -0.5, 0.5  # [m/s]
+        min_ang_z, max_ang_z = -1.5, 1.5  # [rad/s]
+        # sample uniformly using gs_rand_float
+        lin_x = gs_rand_float(min_lin_x, max_lin_x, len(envs_idx))
+        lin_y = gs_rand_float(min_lin_y, max_lin_y, len(envs_idx))
+        ang_z = gs_rand_float(min_ang_z, max_ang_z, len(envs_idx))
+        # stack into velocity vectors
+        lin_vel_cmd = torch.stack([lin_x, lin_y, torch.zeros(len(envs_idx))], dim=1)
+        ang_vel_cmd = torch.stack([
+            torch.zeros(len(envs_idx)),
+            torch.zeros(len(envs_idx)),
+            ang_z
+        ], dim=1)
+        return lin_vel_cmd, ang_vel_cmd
