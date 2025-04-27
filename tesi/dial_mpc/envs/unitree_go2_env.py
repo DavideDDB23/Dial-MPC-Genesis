@@ -71,8 +71,31 @@ class UnitreeGo2Env(BaseEnv):
             ]
         )
 
+        feet_site = [
+            "FL_foot",
+            "FR_foot",
+            "RL_foot",
+            "RR_foot",
+        ]
+        feet_site_id = [
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE.value, f)
+            for f in feet_site
+        ]
+        assert not any(id_ == -1 for id_ in feet_site_id), "Site not found."
+        # store as PyTorch tensor of int indices
+        self._feet_site_id = torch.tensor(feet_site_id, dtype=torch.int32)
+        
+    ''' # test: retrieve feet site world positions via MuJoCo Data
+        mj_data = mujoco.MjData(self.model)
+        mujoco.mj_forward(self.model, mj_data)
+        # site_xpos is a (n_site, 3) numpy array
+        feet_pos = mj_data.site_xpos[self._feet_site_id.tolist()]
+        self._feet_site_pos = torch.as_tensor(feet_pos, dtype=torch.float32)
+        print("Feet site positions (world):", self._feet_site_pos)
+    '''
+
     def create_robot(self):
-        # load model file path via utility to get a Path object
+
         dof_names = [
             "FR_hip_joint",
             "FR_thigh_joint",
@@ -92,4 +115,4 @@ class UnitreeGo2Env(BaseEnv):
         self.model = mjcf.parse_mjcf(model_path)
         self.robot = self.scene.add_entity(gs.morphs.MJCF(file=str(model_path)))
 
-        self.motor_dofs: list[int] = [self.robot.get_joint(name).dof_idx_local for name in dof_names] 
+        self.motor_dofs: list[int] = [self.robot.get_joint(name).dof_idx_local for name in dof_names]
