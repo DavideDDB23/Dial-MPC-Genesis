@@ -155,12 +155,24 @@ def gs_inv_rotate(vec: torch.tensor, quat: torch.tensor):
 
 def global_to_body_velocity(v, q):
     """Transforms global velocity to body velocity using quaternion rotation."""
-    return gs_inv_rotate(v, q)
+    # v: Tensor of shape (...,3), q: Tensor of shape (...,4)
+    w = q[..., 0:1]
+    xyz = q[..., 1:]
+    uv = torch.cross(xyz, v, dim=-1)
+    uuv = torch.cross(xyz, uv, dim=-1)
+    # inverse rotation: apply conjugate quaternion rotation
+    return v - 2 * w * uv + 2 * uuv
 
 
 def body_to_global_velocity(v, q):
     """Transforms body velocity to global velocity using quaternion rotation."""
-    return gs_rotate(v, q)
+    # v: Tensor of shape (...,3), q: Tensor of shape (...,4)
+    w = q[..., 0:1]
+    xyz = q[..., 1:]
+    uv = torch.cross(xyz, v, dim=-1)
+    uuv = torch.cross(xyz, uv, dim=-1)
+    # forward rotation: apply quaternion rotation
+    return v + 2 * w * uv + 2 * uuv
 
 
 def get_foot_step(duty_ratio, cadence, amplitude, phases, time):

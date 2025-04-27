@@ -162,7 +162,6 @@ class UnitreeGo2Env(BaseEnv):
 
     def reset(self, envs_idx: torch.Tensor = None) -> State:
         """Reset whole or part of the batch of environments."""
-        # default to all envs
         b = envs_idx.numel()
         # reinitialize selected envs
         sim_state = self.pipeline_init(
@@ -183,14 +182,49 @@ class UnitreeGo2Env(BaseEnv):
             'last_contact': torch.zeros(b, 4, dtype=torch.bool),
             'feet_air_time': torch.zeros(b, 4),
         }
-        # compute initial observation
-        #obs = self._get_obs(sim_state, state_info)
-        obs = torch.zeros(b, 12)
+        # compute initial observation for selected envs
+        obs = self._get_obs(sim_state, state_info, envs_idx)
         # reward and done flags
         reward = torch.zeros(b)
         done = torch.zeros(b)
+        print("[DEBUG] obs:", obs)
         # return state
         return State(sim_state, obs, reward, done, {}, state_info)
+
+    def _get_obs(self, sim_state, state_info: Dict[str, torch.Tensor], envs_idx: torch.Tensor = None) -> torch.Tensor:
+        # rigid solver state at index 1
+        rigid = sim_state.solvers_state[1]
+        # full positions and velocities
+        qpos_full = torch.as_tensor(rigid.qpos)
+        qvel_full = torch.as_tensor(rigid.dofs_vel)
+        # use only selected envs if provided
+        qpos = qpos_full[envs_idx]
+        qvel = qvel_full[envs_idx]
+        # target commands
+        vel_tar = state_info["vel_tar"]
+        ang_tar = state_info["ang_vel_tar"]
+        # control values same shape as joint positions
+        ctrl = torch.zeros_like(qpos[:, 7:])
+        # body frame velocities
+        base_lin = qvel[:, :3]
+        base_ang = qvel[:, 3:6]
+        base_quat = qpos[:, 3:7]
+        vb = global_to_body_velocity(base_lin, base_quat)
+        ab = global_to_body_velocity(base_ang * (torch.pi / 180.0), base_quat)
+        # joint positions and velocities
+        joint_pos = qpos[:, 7:]
+        joint_vel = qvel[:, 6:]
+        # concat in Brax order
+        obs = torch.cat([
+            vel_tar,
+            ang_tar,
+            ctrl,
+            joint_pos,
+            vb,
+            ab,
+            joint_vel,
+        ], dim=-1)
+        return obs
 
     def sample_command(self, envs_idx) -> tuple[torch.Tensor, torch.Tensor]:
         """

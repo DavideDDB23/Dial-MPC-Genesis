@@ -70,7 +70,7 @@ class BaseEnv:
             self.rigid_solver = solver
 
         # build batched simulation for multiple environments
-        self.scene.build(n_envs=config.n_envs) 
+        self.scene.build(n_envs=config.n_envs, env_spacing=(1, 1)) 
 
     #    self.physical_joint_range2 = self.model.jnt_range[1:]
         self.physical_joint_range = torch.stack(self.robot.get_dofs_limit(self.motor_dofs), dim=1)
