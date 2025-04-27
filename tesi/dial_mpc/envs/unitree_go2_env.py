@@ -9,6 +9,7 @@ import mujoco
 import genesis.utils.mjcf as mjcf
 import torch
 import genesis as gs
+from genesis.engine.solvers.rigid.rigid_solver_decomp import RigidSolver
 
 from dial_mpc.envs.base_env import BaseEnv, BaseEnvConfig
 from dial_mpc.utils.utils import *
@@ -93,6 +94,14 @@ class UnitreeGo2Env(BaseEnv):
         assert not any(id_ == -1 for id_ in feet_site_id), "Site not found."
         # store as PyTorch tensor of int indices
         self._feet_site_id = torch.tensor(feet_site_id, dtype=torch.int32)
+        
+        # find index of the RigidSolver in the simulation solver list
+        self._rigid_solver_idx = None
+        for idx, solver in enumerate(self.scene.sim.solvers):
+            if isinstance(solver, RigidSolver):
+                self._rigid_solver_idx = idx
+                break
+        assert self._rigid_solver_idx is not None, "RigidSolver not found in sim.solvers"
         
     ''' # test: retrieve feet site world positions via MuJoCo Data
         mj_data = mujoco.MjData(self.model)
@@ -192,8 +201,8 @@ class UnitreeGo2Env(BaseEnv):
         return State(sim_state, obs, reward, done, {}, state_info)
 
     def _get_obs(self, sim_state, state_info: Dict[str, torch.Tensor], envs_idx: torch.Tensor = None) -> torch.Tensor:
-        # rigid solver state at index 1
-        rigid = sim_state.solvers_state[1]
+        # fetch the RigidSolverState dynamically
+        rigid = sim_state.solvers_state[self._rigid_solver_idx]
         # full positions and velocities
         qpos_full = torch.as_tensor(rigid.qpos)
         qvel_full = torch.as_tensor(rigid.dofs_vel)
