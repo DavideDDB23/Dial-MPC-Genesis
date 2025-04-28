@@ -42,8 +42,24 @@ def gs_transform_by_quat(pos, quat):
 
 
 def gs_quat2euler(quat):  # xyz
+    """
+    Convert quaternion(s) to Euler angles (roll, pitch, yaw).
+    Supports input shape (4,) or (...,4).
+    """
+    q = torch.as_tensor(quat)
+    # ensure last dimension is size 4
+    if q.shape[-1] != 4:
+        raise ValueError(f"Expected quaternion with last dimension 4, got shape {q.shape}")
+    # handle single quaternion without batch dim
+    squeeze_batch = False
+    if q.ndim == 1:
+        q = q.unsqueeze(0)
+        squeeze_batch = True
     # Extract quaternion components
-    qw, qx, qy, qz = quat.unbind(-1)
+    qw = q[..., 0]
+    qx = q[..., 1]
+    qy = q[..., 2]
+    qz = q[..., 3]
 
     # Roll (x-axis rotation)
     sinr_cosp = 2 * (qw * qx + qy * qz)
@@ -63,7 +79,10 @@ def gs_quat2euler(quat):  # xyz
     cosy_cosp = 1 - 2 * (qy * qy + qz * qz)
     yaw = torch.atan2(siny_cosp, cosy_cosp)
 
-    return torch.stack([roll, pitch, yaw], dim=-1)
+    euler = torch.stack([roll, pitch, yaw], dim=-1)
+    if squeeze_batch:
+        return euler.squeeze(0)
+    return euler
 
 
 def gs_euler2quat(xyz):  # xyz
@@ -142,9 +161,12 @@ def gs_quat_conjugate(a):
 
 def gs_rotate(vec: torch.Tensor, quat: torch.Tensor) -> torch.Tensor:
     """Rotate batched vectors by batched quaternions."""
-    # vec: (...,3), quat: (...,4)
+    # vec: (...,3) or (3,), quat: (...,4)
     w = quat[..., 0:1]  # (...,1)
     u = quat[..., 1:]   # (...,3)
+    # ensure vec has same batch dims as u
+    if vec.shape != u.shape:
+        vec = vec.expand(u.shape)
     # dot(u, v) and cross(u, v)
     dot_u_v = (u * vec).sum(dim=-1, keepdim=True)  # (...,1)
     cross_u_v = torch.cross(u, vec, dim=-1)        # (...,3)
@@ -154,7 +176,7 @@ def gs_rotate(vec: torch.Tensor, quat: torch.Tensor) -> torch.Tensor:
     part3 = 2 * w * cross_u_v
     return part1 + part2 + part3
 
-def quat_to_3x3(q: torch.Tensor) -> torch.Tensor:
+def gs_quat_to_3x3(q: torch.Tensor) -> torch.Tensor:
     """Converts batched quaternion to 3x3 rotation matrices."""
     # q: (...,4)
     w = q[..., 0]

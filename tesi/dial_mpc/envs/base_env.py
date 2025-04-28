@@ -111,18 +111,26 @@ class BaseEnv:
         joint_targets = torch.clamp(joint_targets, phys_lower, phys_upper)
         return joint_targets
 
-    def act2tau(self, act: torch.Tensor, state) -> torch.Tensor:
-        # compute desired joint positions
+    def act2tau(self, act: torch.Tensor, sim_state, envs_idx: torch.Tensor = None) -> torch.Tensor:
+        """Convert normalized action into torque using PD on joint errors, querying Genesis SimState."""
+        # desired joint positions (n_envs, n_actions)
         joint_target = self.act2joint(act)
-        # extract actual joint qpos and qvel (skip free-joint dims)
-        q = state.qpos[..., 7:7 + joint_target.shape[-1]]
-        qd = state.qvel[..., 6:6 + joint_target.shape[-1]]
-        # PD control: tau = kp * error - kd * velocity
+        # get dynamics state from RigidSolver
+        rigid = sim_state.solvers_state[self._rigid_solver_idx]
+        qpos_full = torch.as_tensor(rigid.qpos)     # (n_envs, n_qs)
+        qvel_full = torch.as_tensor(rigid.dofs_vel)  # (n_envs, n_dofs)
+
+        qpos = qpos_full[envs_idx]
+        qvel = qvel_full[envs_idx]
+        # extract joint angles and velocities (skip free-joint dims)
+        q = qpos[:, 7:7 + joint_target.shape[-1]]
+        qd = qvel[:, 6:6 + joint_target.shape[-1]]
+        # PD control
         q_err = joint_target - q
         tau = self._config.kp * q_err - self._config.kd * qd
         # clamp to torque limits
-        lower_tau = self.joint_torque_range[:, 0]
-        upper_tau = self.joint_torque_range[:, 1]
+        lower_tau = self.joint_torque_range[:, 0][None, :]
+        upper_tau = self.joint_torque_range[:, 1][None, :]
         tau = torch.clamp(tau, lower_tau, upper_tau)
         return tau
 
