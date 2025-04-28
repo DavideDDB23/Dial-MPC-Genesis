@@ -71,17 +71,12 @@ class BaseEnv:
 
         # build batched simulation for multiple environments
         self.scene.build(n_envs=config.n_envs, env_spacing=(1, 1)) 
-
-    #    self.physical_joint_range2 = self.model.jnt_range[1:]
+        
         self.physical_joint_range = torch.stack(self.robot.get_dofs_limit(self.motor_dofs), dim=1)
         self.joint_range = self.physical_joint_range
-    #    self.joint_torque_range2 = self.model.actuator_ctrlrange
+        
         lower_torque, upper_torque = self.robot.get_dofs_force_range(self.motor_dofs)
         self.joint_torque_range = torch.stack([lower_torque, upper_torque], dim=1)
-
-         # number of everything
-    #    self._nv2 = self.model.nv
-    #    self._nq2 = self.model.nq
 
         self._nv = self.robot.n_dofs   
         self._nq = self.robot.n_qs
