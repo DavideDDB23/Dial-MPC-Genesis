@@ -164,8 +164,6 @@ class UnitreeGo2Env(BaseEnv):
         )
         # zero joint velocities
         self.robot.zero_all_dofs_velocity(envs_idx)
-        # step the scene once to compute forward kinematics, contacts, etc.
-        self.scene.step()
         # return the fresh simulation state
         return self.scene.get_state()
 
@@ -196,10 +194,146 @@ class UnitreeGo2Env(BaseEnv):
         # reward and done flags
         reward = torch.zeros(b)
         done = torch.zeros(b)
-        print("[DEBUG] obs:", obs)
         # return state
         return State(sim_state, obs, reward, done, {}, state_info)
+    
+    '''def step(self, state: State, action: torch.Tensor) -> State:
 
+        # physics step
+        joint_targets = self.act2joint(action)
+        if self._config.leg_control == "position":
+            ctrl = joint_targets
+        elif self._config.leg_control == "torque":
+            ctrl = self.act2tau(action, state.pipeline_state)
+        pipeline_state = self.pipeline_step(state.pipeline_state, ctrl)
+        x, xd = pipeline_state.x, pipeline_state.xd
+
+        # observation data
+        obs = self._get_obs(pipeline_state, state.info)
+
+        # switch to new target if randomize_target is True
+        def dont_randomize():
+            return (
+                torch.tensor([self._config.default_vx, self._config.default_vy, 0.0]),
+                torch.tensor([0.0, 0.0, self._config.default_vyaw]),
+            )
+
+        def randomize():
+            return self.sample_command()
+
+        vel_tar, ang_vel_tar = torch.cond(
+            (state.info["randomize_target"]) & (state.info["step"] % 500 == 0),
+            randomize,
+            dont_randomize,
+        )
+        state.info["vel_tar"] = torch.minimum(
+            vel_tar * state.info["step"] * self.dt / self._config.ramp_up_time, vel_tar
+        )
+        state.info["ang_vel_tar"] = torch.minimum(
+            ang_vel_tar * state.info["step"] * self.dt / self._config.ramp_up_time,
+            ang_vel_tar,
+        )
+
+        # reward
+        # gaits reward
+        mj_data = mujoco.MjData(self.model)
+        mujoco.mj_forward(self.model, mj_data)
+        # site_xpos is a (n_site, 3) numpy array
+        feet_pos = mj_data.site_xpos[self._feet_site_id.tolist()][:, 2]
+        self._feet_site_pos = torch.as_tensor(feet_pos, dtype=torch.float32)
+
+        z_feet = pipeline_state.site_xpos[self._feet_site_id][:, 2]
+        duty_ratio, cadence, amplitude = self._gait_params[self._gait]
+        phases = self._gait_phase[self._gait]
+        z_feet_tar = get_foot_step(
+            duty_ratio, cadence, amplitude, phases, state.info["step"] * self.dt
+        )
+        reward_gaits = -torch.sum(((z_feet_tar - z_feet) / 0.05) ** 2)
+        # foot contact data based on z-position
+        foot_pos = pipeline_state.site_xpos[
+            self._feet_site_id
+        ]  # pytype: disable=attribute-error
+        foot_contact_z = foot_pos[:, 2] - self._foot_radius
+        contact = foot_contact_z < 1e-3  # a mm or less off the floor
+        contact_filt_mm = contact | state.info["last_contact"]
+        contact_filt_cm = (foot_contact_z < 3e-2) | state.info["last_contact"]
+        first_contact = (state.info["feet_air_time"] > 0) * contact_filt_mm
+        state.info["feet_air_time"] += self.dt
+        reward_air_time = torch.sum((state.info["feet_air_time"] - 0.1) * first_contact)
+        # position reward
+        pos_tar = (
+            state.info["pos_tar"] + state.info["vel_tar"] * self.dt * state.info["step"]
+        )
+        pos = x.pos[self._torso_idx - 1]
+        R = math.quat_to_3x3(x.rot[self._torso_idx - 1])
+        head_vec = torch.tensor([0.285, 0.0, 0.0])
+        head_pos = pos + torch.dot(R, head_vec)
+        reward_pos = -torch.sum((head_pos - pos_tar) ** 2)
+        # stay upright reward
+        vec_tar = torch.tensor([0.0, 0.0, 1.0])
+        vec = math.rotate(vec_tar, x.rot[0])
+        reward_upright = -torch.sum(torch.square(vec - vec_tar))
+        # yaw orientation reward
+        yaw_tar = (
+            state.info["yaw_tar"]
+            + state.info["ang_vel_tar"][2] * self.dt * state.info["step"]
+        )
+        yaw = gs_quat2euler(x.rot[self._torso_idx - 1])[2]
+        d_yaw = yaw - yaw_tar
+        reward_yaw = -torch.square(torch.atan2(torch.sin(d_yaw), torch.cos(d_yaw)))
+        vb = global_to_body_velocity(
+            xd.vel[self._torso_idx - 1], x.rot[self._torso_idx - 1]
+        )
+        ab = global_to_body_velocity(
+            xd.ang[self._torso_idx - 1] * torch.pi / 180.0, x.rot[self._torso_idx - 1]
+        )
+        reward_vel = -torch.sum((vb[:2] - state.info["vel_tar"][:2]) ** 2)
+        reward_ang_vel = -torch.sum((ab[2] - state.info["ang_vel_tar"][2]) ** 2)
+        # height reward
+        reward_height = -torch.sum(
+            (x.pos[self._torso_idx - 1, 2] - state.info["pos_tar"][2]) ** 2
+        )
+        # energy reward
+        reward_energy = -torch.sum(
+            torch.maximum(ctrl * pipeline_state.qvel[6:] / 160.0, 0.0) ** 2
+        )
+        # stay alive reward
+        reward_alive = 1.0 - state.done
+        # reward
+        reward = (
+            reward_gaits * 0.1
+            + reward_air_time * 0.0
+            + reward_pos * 0.0
+            + reward_upright * 0.5
+            + reward_yaw * 0.3
+            + reward_vel * 1.0
+            + reward_ang_vel * 1.0
+            + reward_height * 1.0
+            + reward_energy * 0.00
+            + reward_alive * 0.0
+        )
+
+        # done
+        up = torch.tensor([0.0, 0.0, 1.0])
+        joint_angles = pipeline_state.q[7:]
+        done = torch.dot(math.rotate(up, x.rot[self._torso_idx - 1]), up) < 0
+        done |= torch.any(joint_angles < self.joint_range[:, 0])
+        done |= torch.any(joint_angles > self.joint_range[:, 1])
+        done |= pipeline_state.x.pos[self._torso_idx - 1, 2] < 0.18
+        done = done.astype(torch.float32)
+
+        # state management
+        state.info["step"] += 1
+        state.info["z_feet"] = z_feet
+        state.info["z_feet_tar"] = z_feet_tar
+        state.info["feet_air_time"] *= ~contact_filt_mm
+        state.info["last_contact"] = contact
+
+        state = state.replace(
+            pipeline_state=pipeline_state, obs=obs, reward=reward, done=done
+        )
+        return state
+'''
     def _get_obs(self, sim_state, state_info: Dict[str, torch.Tensor], envs_idx: torch.Tensor = None) -> torch.Tensor:
         # fetch the RigidSolverState dynamically
         rigid = sim_state.solvers_state[self._rigid_solver_idx]

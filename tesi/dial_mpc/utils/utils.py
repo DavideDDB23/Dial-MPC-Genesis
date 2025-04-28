@@ -12,10 +12,11 @@ def gs_rand_float(lower, upper, shape, device):
     return (upper - lower) * torch.rand(size=shape, device=device) + lower
 
 
-def gs_inv_quat(quat):
-    qw, qx, qy, qz = quat.unbind(-1)
-    inv_quat = torch.stack([1.0 * qw, -qx, -qy, -qz], dim=-1)
-    return inv_quat
+def gs_inv_quat(quat: torch.Tensor) -> torch.Tensor:
+    """Returns the conjugate (inverse) of unit quaternions, supports arbitrary leading batch dims."""
+    q = torch.as_tensor(quat)
+    # scalar part unchanged; vector part negated
+    return torch.cat([q[..., :1], -q[..., 1:]], dim=-1)
 
 
 def gs_transform_by_quat(pos, quat):
@@ -139,40 +140,68 @@ def gs_quat_conjugate(a):
     a = a.reshape(-1, 4)
     return torch.cat((a[:, :1], -a[:, 1:], ), dim=-1).view(shape)
 
+def gs_rotate(vec: torch.Tensor, quat: torch.Tensor) -> torch.Tensor:
+    """Rotate batched vectors by batched quaternions."""
+    # vec: (...,3), quat: (...,4)
+    w = quat[..., 0:1]  # (...,1)
+    u = quat[..., 1:]   # (...,3)
+    # dot(u, v) and cross(u, v)
+    dot_u_v = (u * vec).sum(dim=-1, keepdim=True)  # (...,1)
+    cross_u_v = torch.cross(u, vec, dim=-1)        # (...,3)
+    # quaternion rotation formula: (w^2 - ||u||^2)*v + 2*(u·v)*u + 2*w*(u×v)
+    part1 = (w * w - u.mul(u).sum(dim=-1, keepdim=True)) * vec
+    part2 = 2 * dot_u_v * u
+    part3 = 2 * w * cross_u_v
+    return part1 + part2 + part3
 
+def quat_to_3x3(q: torch.Tensor) -> torch.Tensor:
+    """Converts batched quaternion to 3x3 rotation matrices."""
+    # q: (...,4)
+    w = q[..., 0]
+    x = q[..., 1]
+    y = q[..., 2]
+    z = q[..., 3]
+    # compute scale factor
+    d = (q * q).sum(dim=-1)         # (...)
+    s = 2.0 / d                     # (...)
+    xs = x * s
+    ys = y * s
+    zs = z * s
+    wx = w * xs
+    wy = w * ys
+    wz = w * zs
+    xx = x * xs
+    xy = x * ys
+    xz = x * zs
+    yy = y * ys
+    yz = y * zs
+    zz = z * zs
+    # assemble rotation matrix rows
+    row0 = torch.stack([1 - (yy + zz), xy - wz, xz + wy], dim=-1)
+    row1 = torch.stack([xy + wz, 1 - (xx + zz), yz - wx], dim=-1)
+    row2 = torch.stack([xz - wy, yz + wx, 1 - (xx + yy)], dim=-1)
+    return torch.stack([row0, row1, row2], dim=-2)
 
-def gs_rotate(vec: torch.tensor, quat: torch.tensor):
-  if len(vec.shape) != 1:
-    raise ValueError('vec must have no batch dimensions.')
-  s, u = quat[0], quat[1:]
-  r = 2 * (torch.dot(u, vec) * u) + (s * s - torch.dot(u, u)) * vec
-  r = r + 2 * s * torch.cross(u, vec)
-  return r
-
-def gs_inv_rotate(vec: torch.tensor, quat: torch.tensor):
-  return gs_rotate(vec, gs_inv_quat(quat))
+def gs_inv_rotate(vec: torch.Tensor, quat: torch.Tensor) -> torch.Tensor:
+    """Rotate batched vectors by the inverse (conjugate) of batched quaternions directly."""
+    # vec: (...,3), quat: (...,4)
+    w = quat[..., :1]  # (...,1)
+    u = quat[..., 1:]  # (...,3)
+    # inverse (conjugate) quaternion = [w, -u]
+    inv_q = torch.cat([w, -u], dim=-1)
+    return gs_rotate(vec, inv_q)
 
 
 def global_to_body_velocity(v, q):
-    """Transforms global velocity to body velocity using quaternion rotation."""
-    # v: Tensor of shape (...,3), q: Tensor of shape (...,4)
-    w = q[..., 0:1]
-    xyz = q[..., 1:]
-    uv = torch.cross(xyz, v, dim=-1)
-    uuv = torch.cross(xyz, uv, dim=-1)
-    # inverse rotation: apply conjugate quaternion rotation
-    return v - 2 * w * uv + 2 * uuv
+    """Transforms global-frame velocity to body-frame using the inverse quaternion rotation."""
+    # Simply rotate by the inverse quaternion for batched inputs
+    return gs_inv_rotate(v, q)
 
 
 def body_to_global_velocity(v, q):
-    """Transforms body velocity to global velocity using quaternion rotation."""
-    # v: Tensor of shape (...,3), q: Tensor of shape (...,4)
-    w = q[..., 0:1]
-    xyz = q[..., 1:]
-    uv = torch.cross(xyz, v, dim=-1)
-    uuv = torch.cross(xyz, uv, dim=-1)
-    # forward rotation: apply quaternion rotation
-    return v + 2 * w * uv + 2 * uuv
+    """Transforms body-frame velocity to global frame using quaternion rotation."""
+    # simply rotate by quaternion
+    return gs_rotate(v, q)
 
 
 def get_foot_step(duty_ratio, cadence, amplitude, phases, time):
