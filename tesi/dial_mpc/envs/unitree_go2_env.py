@@ -44,7 +44,7 @@ class UnitreeGo2Env(BaseEnv):
 
         self._gait = config.gait
         self._gait_phase = {
-            "stand": torch.tensor(4),
+            "stand": torch.zeros(4),
             "walk": torch.tensor([0.0, 0.5, 0.75, 0.25]),
             "trot": torch.tensor([0.0, 0.5, 0.5, 0.0]),
             "canter": torch.tensor([0.0, 0.33, 0.33, 0.66]),
@@ -95,7 +95,7 @@ class UnitreeGo2Env(BaseEnv):
         # store as PyTorch tensor of int indices
         self._feet_site_id = torch.tensor(feet_site_id, dtype=torch.int32)
         
-        # find index of the RigidSolver in the simulation solver list, questo potrebbe non servire, gia dichiarato in base_env
+        # find index of the RigidSolver in the simulation solver list
         self._rigid_solver_idx = None
         for idx, solver in enumerate(self.scene.sim.solvers):
             if isinstance(solver, RigidSolver):
@@ -212,6 +212,42 @@ class UnitreeGo2Env(BaseEnv):
         self.scene.step()
         new_sim_state = self.scene.get_state()
 
+        obs = self._get_obs(new_sim_state, state.info, ctrl, envs_idx)
+
+        # switch to new target if randomize_target is True
+        def dont_randomize():
+            batch_size = envs_idx.numel()
+            return (
+                torch.tensor([self._config.default_vx, self._config.default_vy, 0.0], device=envs_idx.device).unsqueeze(0).expand(batch_size, -1),
+                torch.tensor([0.0, 0.0, self._config.default_vyaw], device=envs_idx.device).unsqueeze(0).expand(batch_size, -1),
+            )
+
+        # Check which environments need target randomization
+        should_randomize = (state.info["randomize_target"]) & (state.info["step"] % 500 == 0)
+        
+        # Get default values for all environments
+        default_vel_tar, default_ang_vel_tar = dont_randomize()
+        
+        # Initialize with default values
+        vel_tar = default_vel_tar.clone()
+        ang_vel_tar = default_ang_vel_tar.clone()
+        
+        # If any environment needs randomization, get random values and update only those
+        if should_randomize.any():
+            random_vel_tar, random_ang_vel_tar = self.sample_command(envs_idx[should_randomize])
+            vel_tar[should_randomize] = random_vel_tar
+            ang_vel_tar[should_randomize] = random_ang_vel_tar
+        
+        # Calculate ramped values based on step count
+        state.info["vel_tar"] = torch.minimum(
+            vel_tar * state.info["step"].unsqueeze(-1) * self._config.dt / self._config.ramp_up_time, 
+            vel_tar
+        )
+        state.info["ang_vel_tar"] = torch.minimum(
+            ang_vel_tar * state.info["step"].unsqueeze(-1) * self._config.dt / self._config.ramp_up_time,
+            ang_vel_tar,
+        )
+
         # extract rigid state
         rigid = new_sim_state.solvers_state[self._rigid_solver_idx]
         qpos_full = torch.as_tensor(rigid.qpos)
@@ -283,7 +319,7 @@ class UnitreeGo2Env(BaseEnv):
 
         # done condition
         # compute body z-axis dot up-vector per environment
-        up = torch.tensor([0.0, 0.0, 1.0])
+        up = torch.tensor([0.0, 0.0, 1.0], device=base_pos.device)
         rot_up = gs_rotate(up, base_quat)  # (b,3)
         done = (rot_up * up).sum(dim=-1) < 0
         joint_angles = qpos[:, 7:]
@@ -302,7 +338,7 @@ class UnitreeGo2Env(BaseEnv):
         # return new State
         return State(
             sim_state=new_sim_state,
-            obs=self._get_obs(new_sim_state, state.info, ctrl, envs_idx),
+            obs=obs,
             reward=reward,
             done=done,
             metrics={},
@@ -345,19 +381,25 @@ class UnitreeGo2Env(BaseEnv):
         Sample linear and angular velocity commands for environments that needs it.
         Returns two tensors of shape (lenght of envs_idx, 3): (lin_vel_cmd, ang_vel_cmd).
         """
-        # hardcoded ranges (min,max) for linear and angular velocity
-        min_lin_x, max_lin_x = -1.5, 1.5  # [m/s]
-        min_lin_y, max_lin_y = -0.5, 0.5  # [m/s]
-        min_ang_z, max_ang_z = -1.5, 1.5  # [rad/s]
-        # sample uniformly using gs_rand_float
-        lin_x = gs_rand_float(min_lin_x, max_lin_x, len(envs_idx))
-        lin_y = gs_rand_float(min_lin_y, max_lin_y, len(envs_idx))
-        ang_z = gs_rand_float(min_ang_z, max_ang_z, len(envs_idx))
-        # stack into velocity vectors
-        lin_vel_cmd = torch.stack([lin_x, lin_y, torch.zeros(len(envs_idx))], dim=1)
+        # hardcoded ranges (min,max) for linear and angular velocity - same as Brax
+        lin_vel_x = [-1.5, 1.5]  # min max [m/s]
+        lin_vel_y = [-0.5, 0.5]  # min max [m/s]
+        ang_vel_yaw = [-1.5, 1.5]  # min max [rad/s]
+        
+        # sample uniformly using gs_rand_float - match Brax's jax.random.uniform
+        device = envs_idx.device
+        batch_size = len(envs_idx)
+        
+        lin_x = gs_rand_float(lin_vel_x[0], lin_vel_x[1], batch_size, device)
+        lin_y = gs_rand_float(lin_vel_y[0], lin_vel_y[1], batch_size, device)
+        ang_z = gs_rand_float(ang_vel_yaw[0], ang_vel_yaw[1], batch_size, device)
+        
+        # Create velocity commands in same format as Brax
+        lin_vel_cmd = torch.stack([lin_x, lin_y, torch.zeros(batch_size, device=device)], dim=1)
         ang_vel_cmd = torch.stack([
-            torch.zeros(len(envs_idx)),
-            torch.zeros(len(envs_idx)),
+            torch.zeros(batch_size, device=device),
+            torch.zeros(batch_size, device=device),
             ang_z
         ], dim=1)
+        
         return lin_vel_cmd, ang_vel_cmd

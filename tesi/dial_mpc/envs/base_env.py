@@ -123,9 +123,5 @@ class BaseEnv:
         # PD control
         q_err = joint_target - q
         tau = self._config.kp * q_err - self._config.kd * qd
-        # clamp to torque limits
-        lower_tau = self.joint_torque_range[:, 0][None, :]
-        upper_tau = self.joint_torque_range[:, 1][None, :]
-        tau = torch.clamp(tau, lower_tau, upper_tau)
         return tau
 

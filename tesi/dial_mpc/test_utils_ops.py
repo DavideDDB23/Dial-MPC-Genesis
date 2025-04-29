@@ -7,7 +7,7 @@ from dial_mpc.utils.utils import (
     gs_inv_quat,
     gs_rotate,
     gs_inv_rotate,
-    quat_to_3x3,
+    gs_quat_to_3x3,
     global_to_body_velocity,
     body_to_global_velocity,
 )

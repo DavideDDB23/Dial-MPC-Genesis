@@ -12,7 +12,7 @@ class BaseEnvConfig:
     dt: float = 0.02
     # timestep of the underlying simulator step. user is responsible for making sure it matches their model.
     timestep: float = 0.02
-    backend: str = "mps"  # hardware & Genesis backend
+    backend: str = "cpu"  # hardware & Genesis backend
     # control method for the joints, either "torque" or "position"
     leg_control: str = "torque"
     action_scale: float = 1.0  # scale of the action space.
