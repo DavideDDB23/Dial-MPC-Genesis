@@ -26,64 +26,58 @@ from dial_mpc.envs.unitree_go2_env import UnitreeGo2EnvConfig, UnitreeGo2Env
 
 plt.style.use("science")
 
-def rollout_batch(self, env, initial_state, us_batch):
+def rollout_batch(env, initial_state, us_batch):
         """
-        Esegue rollout paralleli di Nsample traiettorie utilizzando il batch processing di Genesis.
+        Performs parallel rollouts of Nsample trajectories using Genesis batch processing.
         
         Args:
-            env: Environment Genesis
-            initial_state: Stato iniziale per tutti gli ambienti
-            us_batch: Tensore di azioni di shape (Nsample, Hsample, nu)
+            env: Environment
+            initial_state: Initial state for all environments
+            us_batch: Action tensor of shape (Nsample, Hsample, nu)
             
         Returns:
-            rewards: Tensore di reward di shape (Nsample, Hsample)
-            pipeline_states: Oggetto contenente dati di stato per tutti i batch
+            rewards: Reward tensor of shape (Nsample, Hsample)
+            pipeline_states: Object containing state data for all batches
         """
         Nsample = us_batch.shape[0]
         Hsample = us_batch.shape[1]
         nu = us_batch.shape[2]
         
-        # Prepara strutture dati per raccogliere risultati
+        # Prepare data structures to collect results
         all_rewards = []
         all_q = []
         all_qd = []
         all_x_pos = []
         
-        # Prepara un batch di Nsample ambienti
+        # Prepare a batch of Nsample environments
         envs_idx = torch.arange(Nsample)
         state_batch = initial_state
         
-        # Esegui Hsample passi di simulazione
+        # Collect reward
+        # Hsample simulation steps
         for t in range(Hsample):
-            # Applica azioni per questo timestep a tutti gli ambienti in parallelo
+            # Apply actions for this timestep to all environments in parallel
             actions_t = us_batch[:, t]  # Shape: (Nsample, nu)
             state_batch = env.step(state_batch, actions_t, envs_idx=envs_idx)
             
-            # Raccogli reward
+            # Collect reward
             all_rewards.append(state_batch.reward)
             
-            # Cerca il RigidSolver fra i solvers
-            rigid_solver_idx = None
-            for idx, solver in enumerate(env.scene.sim.solvers):
-                if isinstance(solver, gs.engine.solvers.rigid.rigid_solver_decomp.RigidSolver):
-                    rigid_solver_idx = idx
-                    break
-                
-            # Estrai dati di stato
-            rigid = state_batch.sim_state.solvers_state[rigid_solver_idx]
+            # Extract state data
+            rigid = state_batch.sim_state.solvers_state[env._rigid_solver_idx]
             
-            # Raccogli posizioni e velocità
+            # Collect positions and velocities
             qpos = torch.tensor(rigid.qpos)[envs_idx]
             qvel = torch.tensor(rigid.dofs_vel)[envs_idx]
             
             all_q.append(qpos)
             all_qd.append(qvel)
-            all_x_pos.append(qpos[:, :3])  # Posizione base (x, y, z)
+            all_x_pos.append(qpos[:, :3])
         
-        # Converti liste in tensori
+        # Convert lists to tensors
         rewards = torch.stack(all_rewards, dim=1)  # Shape: (Nsample, Hsample)
         
-        # Crea struttura per pipeline_states
+        # Create structure for pipeline_states
         class PipelineStates:
             def __init__(self, q, qd, x_pos):
                 self.q = torch.stack(q, dim=1)      # Shape: (Nsample, Hsample, n_q)
@@ -98,36 +92,29 @@ def rollout_batch(self, env, initial_state, us_batch):
 
 def softmax_update(weights, Y0s, sigma, mu_0t):
     """
-    Esegue l'aggiornamento softmax delle traiettorie di controllo.
+    Performs softmax update of control trajectories.
     
     Args:
-        weights: Pesi softmax per ogni traiettoria di shape (Nsample,)
-        Y0s: Tensore di traiettorie di controllo di shape (Nsample, Hnode+1, nu)
-        sigma: Scala del rumore
-        mu_0t: Traiettoria media corrente (non usata nel nostro caso)
+        weights: Softmax weights for each trajectory of shape (Nsample,)
+        Y0s: Control trajectories tensor of shape (Nsample, Hnode+1, nu)
+        sigma: Noise scale
+        mu_0t: Current mean trajectory (not used in our case)
         
     Returns:
-        mu_0tm1: Nuova traiettoria media
-        sigma: Scala del rumore (invariata)
+        mu_0tm1: New mean trajectory
+        sigma: Noise scale (unchanged)
     """
-    # Assicuriamo che i tensori abbiano lo stesso tipo (float32)
+    # Ensure tensors have the same type (float32)
     weights = weights.to(torch.float32)
     Y0s = Y0s.to(torch.float32)
     
-    # Esegue una media pesata delle traiettorie di controllo
+    # Calculate weighted averages (same functionality as jnp.einsum)
     mu_0tm1 = torch.einsum("n,nij->ij", weights, Y0s)
     return mu_0tm1, sigma
 
 
 class MBDPI:
     def __init__(self, args: DialConfig, env):
-        """
-        Inizializza il planner MBDPI.
-        
-        Args:
-            args: Configurazione del planner
-            env: Environment Genesis
-        """
         self.args = args
         self.env = env
         self.nu = len(env.motor_dofs)
@@ -138,19 +125,16 @@ class MBDPI:
             "mppi": softmax_update,
         }[args.update_method]
 
-        # Configurazione del rumore di diffusione
         sigma0 = 1e-2
         sigma1 = 1.0
         A = sigma0
         B = torch.log(torch.tensor(sigma1 / sigma0)) / args.Ndiffuse
         self.sigmas = A * torch.exp(B * torch.arange(args.Ndiffuse))
-        
-        # Controllo scala rumore per orizzonte
         self.sigma_control = (
             args.horizon_diffuse_factor ** torch.arange(args.Hnode + 1).flip(0)
         )
 
-        # Parametri per interpolazione nodo-azione
+        # Parameters for node-action interpolation
         self.ctrl_dt = 0.02
         self.step_us = torch.linspace(0, self.ctrl_dt * args.Hsample, args.Hsample + 1)
         self.step_nodes = torch.linspace(0, self.ctrl_dt * args.Hsample, args.Hnode + 1)
@@ -160,13 +144,13 @@ class MBDPI:
 
     def node2u(self, nodes):
         """
-        Converte nodi di controllo in azioni tramite interpolazione spline.
+        Converts control nodes to actions using spline interpolation.
         
         Args:
-            nodes: Tensore di nodi di shape (Hnode+1, nu) o (batch, Hnode+1, nu)
+            nodes: Nodes tensor of shape (Hnode+1, nu) or (batch, Hnode+1, nu)
             
         Returns:
-            us: Tensore di azioni di shape (Hsample+1, nu) o (batch, Hsample+1, nu)
+            us: Actions tensor of shape (Hsample+1, nu) or (batch, Hsample+1, nu)
         """
         # Convert to numpy for SciPy
         if nodes.ndim == 2:
@@ -194,13 +178,13 @@ class MBDPI:
 
     def u2node(self, us):
         """
-        Converte azioni in nodi di controllo tramite interpolazione spline.
+        Converts actions to control nodes using spline interpolation.
         
         Args:
-            us: Tensore di azioni di shape (Hsample+1, nu) o (batch, Hsample+1, nu)
+            us: Actions tensor of shape (Hsample+1, nu) or (batch, Hsample+1, nu)
             
         Returns:
-            nodes: Tensore di nodi di shape (Hnode+1, nu) o (batch, Hnode+1, nu)
+            nodes: Nodes tensor of shape (Hnode+1, nu) or (batch, Hnode+1, nu)
         """
         # Convert to numpy for SciPy
         if us.ndim == 2:
@@ -228,46 +212,42 @@ class MBDPI:
 
     def reverse_once(self, state, Ybar_i, noise_scale):
         """
-        Esegue un'iterazione del processo di "diffusione inversa", campionando traiettorie di controllo
-        e aggiornando la traiettoria media in base ai reward ottenuti.
+        Performs one iteration of the "reverse diffusion" process, sampling control trajectories
+        and updating the mean trajectory based on obtained rewards.
         
         Args:
-            state: Stato corrente dell'ambiente
-            Ybar_i: Traiettoria media corrente di shape (Hnode+1, nu)
-            noise_scale: Scala del rumore per questa iterazione
+            state: Current environment state
+            Ybar_i: Current mean trajectory of shape (Hnode+1, nu)
+            noise_scale: Noise scale for this iteration
             
         Returns:
-            Ybar: Nuova traiettoria media
-            info: Dizionario con informazioni sulla diffusione
+            Ybar: New mean trajectory
+            info: Dictionary with diffusion information
         """
         Ybar_i = Ybar_i.to(torch.float32)
         noise_scale = noise_scale.to(torch.float32)
-        # Campiona Nsample traiettorie di controllo con rumore
+
         eps_Y = torch.randn(
             (self.args.Nsample, self.args.Hnode + 1, self.nu), dtype=torch.float32
         )
         Y0s = eps_Y * noise_scale[None, :, None] + Ybar_i
         
-        # Non possiamo cambiare il primo controllo
+        # we can't change the first control
         Y0s[:, 0] = Ybar_i[0]
         
-        # Aggiungi Ybar_i alle traiettorie per valutarla
+        # append Y0s with Ybar_i to also evaluate Ybar_i
         Ybar_i_expanded = Ybar_i.unsqueeze(0)  # shape: (1, Hnode+1, nu)
         Y0s = torch.cat([Y0s, Ybar_i_expanded], dim=0)
-        
-        # Clip per mantenere i valori nell'intervallo [-1, 1]
         Y0s = torch.clamp(Y0s, -1.0, 1.0)
         
-        # Converti i nodi di controllo in azioni
+        # Convert control nodes to actions
         us = self.node2u(Y0s)  # shape: (Nsample+1, Hsample+1, nu)
         
-        # Esegui rollout per tutte le traiettorie di controllo
-        # Reset degli ambienti
         envs_idx = torch.arange(Y0s.shape[0])
         state_batch = self.env.reset(envs_idx=envs_idx)
         
-        # Rollout
-        rewss, pipeline_statess = rollout_batch(self, self.env, state_batch, us)
+        # esitimate mu_0tm1
+        rewss, pipeline_statess = rollout_batch(self.env, state_batch, us)
         rew_Ybar_i = rewss[-1].mean()
         qss = pipeline_statess.q.to(torch.float32)
         qdss = pipeline_statess.qd.to(torch.float32)
@@ -278,15 +258,14 @@ class MBDPI:
         weights = torch.nn.functional.softmax(logp0, dim=0)
         Ybar, new_noise_scale = self.update_fn(weights, Y0s, noise_scale, Ybar_i)
                 
-        # Calcola medie pesate (stessa funzionalità di jnp.einsum)
-        # Assicuriamo che weights sia float32
+        # Calculate weighted averages 
         weights = weights.to(torch.float32)
         Ybar = torch.einsum("n,nij->ij", weights, Y0s)
         qbar = torch.einsum("n,nij->ij", weights, qss)
         qdbar = torch.einsum("n,nij->ij", weights, qdss)
         xbar = torch.einsum("n,nij->ij", weights, xss)
         
-        # Prepara info
+        # Prepare info
         info = {
             "rews": rews,
             "qbar": qbar,
@@ -299,15 +278,15 @@ class MBDPI:
 
     def reverse(self, state, YN):
         """
-        Esegue il processo di diffusione inversa completo, eseguendo più iterazioni di reverse_once
-        con rumore gradualmente decrescente.
+        Performs the complete reverse diffusion process, executing multiple iterations of reverse_once
+        with gradually decreasing noise.
         
         Args:
-            state: Stato corrente dell'ambiente
-            YN: Traiettoria iniziale (generalmente tutti zeri) di shape (Hnode+1, nu)
+            state: Current environment state
+            YN: Initial trajectory (generally all zeros) of shape (Hnode+1, nu)
             
         Returns:
-            Yi: Traiettoria ottimizzata
+            Yi: Optimized trajectory
         """
         Yi = YN
         with tqdm(range(self.args.Ndiffuse - 1, 0, -1), desc="Diffusing") as pbar:
@@ -316,7 +295,6 @@ class MBDPI:
                 Yi, info = self.reverse_once(
                     state, Yi, self.sigmas[i] * torch.ones(self.args.Hnode + 1)
                 )
-                # Forza l'esecuzione per misurare correttamente il tempo
                 if torch.is_tensor(Yi): 
                     Yi = Yi.contiguous()
                 freq = 1 / (time.time() - t0)
@@ -325,53 +303,53 @@ class MBDPI:
 
     def shift(self, Y):
         """
-        Sposta la traiettoria un passo in avanti, impostando l'ultimo controllo a zero.
+        Shifts the trajectory one step forward, setting the last control to zero.
         
         Args:
-            Y: Traiettoria di controllo di shape (Hnode+1, nu)
+            Y: Control trajectory of shape (Hnode+1, nu)
             
         Returns:
-            Y_shifted: Traiettoria spostata
+            Y_shifted: Shifted trajectory
         """
-        # Converti i nodi in azioni
+        # Convert control nodes to actions
         u = self.node2u(Y)
         
-        # Sposta le azioni in avanti di un passo
+        # Shift actions forward by one step
         u_shifted = torch.roll(u, -1, dims=0)
         
-        # Imposta l'ultima azione a zero
+        # Set last action to zero
         u_shifted[-1] = torch.zeros(self.nu)
         
-        # Converti nuovamente in nodi
+        # Convert back to nodes
         Y_shifted = self.u2node(u_shifted)
         
         return Y_shifted
 
     def shift_Y_from_u(self, u, n_step):
         """
-        Sposta la traiettoria di azioni di n_step passi e la converte in nodi.
+        Shifts the action trajectory by n_step steps and converts it to nodes.
         
         Args:
-            u: Traiettoria di azioni di shape (Hsample+1, nu)
-            n_step: Numero di passi da spostare
+            u: Action trajectory of shape (Hsample+1, nu)
+            n_step: Number of steps to shift
             
         Returns:
-            Y: Traiettoria di nodi spostata
+            Y: Shifted node trajectory
         """
-        # Sposta le azioni in avanti di n_step passi
+        # Shift actions forward by n_step steps
         u_shifted = torch.roll(u, -n_step, dims=0)
         
-        # Imposta le ultime n_step azioni a zero
+        # Set last n_step actions to zero
         u_shifted[-n_step:] = torch.zeros_like(u_shifted[-n_step:])
         
-        # Converti in nodi
+        # Convert to nodes
         Y = self.u2node(u_shifted)
         
         return Y
 
 def main():
     """
-    Funzione principale che esegue l'algoritmo DIAL-MPC
+    Main function that executes the DIAL-MPC algorithm
     """
     art.tprint("LeCAR @ CMU\nDIAL-MPC", font="big", chr_ignore=True)
     parser = argparse.ArgumentParser()
@@ -395,22 +373,18 @@ def main():
     dial_config = load_dataclass_from_dict(DialConfig, config_dict)
     torch.manual_seed(dial_config.seed)
 
-    # Trova la configurazione dell'environment
     env_config = load_dataclass_from_dict(
         UnitreeGo2EnvConfig, config_dict, convert_list_to_array=True
     )
     
-    # Imposta n_envs = Nsample + 1 hardcoded
     env_config.n_envs = dial_config.Nsample + 1
 
     print(emoji.emojize(":rocket:") + "Creating environment")
     env = UnitreeGo2Env(env_config)
     mbdpi = MBDPI(dial_config, env)
 
-    # Inizializza lo stato
     state_init = env.reset(envs_idx=torch.tensor([0]))
 
-    # Inizializza la traiettoria di controllo
     YN = torch.zeros([dial_config.Hnode + 1, mbdpi.nu])
     Y0 = YN
 
@@ -421,17 +395,15 @@ def main():
     state = state_init
     us = []
     infos = []
-
-    # Loop principale
     with tqdm(range(Nstep), desc="Rollout") as pbar:
         for t in pbar:
-            # Esegue un passo avanti singolo
+            # forward single step
             state = env.step(state, Y0[0], envs_idx=torch.tensor([0]))
             rollout.append(state)
             rews.append(state.reward.item())
             us.append(Y0[0].clone())
 
-            # Aggiorna Y0 per il prossimo passo
+            # update Y0
             Y0 = mbdpi.shift(Y0)
 
             n_diffuse = dial_config.Ndiffuse
@@ -451,43 +423,38 @@ def main():
             freq = 1 / (time.time() - t0)
             pbar.set_postfix({"rew": f"{state.reward.item():.2e}", "freq": f"{freq:.2f}"})
 
-    # Calcola reward medio
     rew = sum(rews) / len(rews)
     print(f"mean reward = {rew:.2e}")
 
-    # Crea directory di output se non esiste
+    # Create output directory if it doesn't exist
     if not os.path.exists(dial_config.output_dir):
         os.makedirs(dial_config.output_dir)
 
     timestamp = time.strftime("%Y%m%d-%H%M%S")
 
-    # Salva il rollout
+    # Save rollout
     data = []
     xdata = []
     for i, state in enumerate(rollout):
-        # Estrai i dati dallo stato
-        rigid = state.sim_state.solvers_state[1]
-        qpos = torch.tensor(rigid.qpos)
-        qvel = torch.tensor(rigid.dofs_vel)
+        rigid = state.sim_state.solvers_state[env._rigid_solver_idx]
+        # Select only the first environment's state
+        qpos = torch.tensor(rigid.qpos)[0] 
+        qvel = torch.tensor(rigid.dofs_vel)[0]
         
-        # Concatena i dati
         data_i = torch.cat([
             torch.tensor([i]).float(),
-            qpos.flatten(),
+            qpos.flatten(), 
             qvel.flatten(),
             torch.tensor(us[i])
         ])
         data.append(data_i)
         
-        # Estrai xbar dall'ultima info
         if i < len(infos):
             xdata.append(infos[i]["xbar"][-1])
     
-    # Converti in tensori e salva
     data_tensor = torch.stack(data)
     xdata_tensor = torch.stack(xdata)
     
-    # Salva come numpy arrays
     np.save(os.path.join(dial_config.output_dir, f"{timestamp}_states"), data_tensor.numpy())
     np.save(os.path.join(dial_config.output_dir, f"{timestamp}_predictions"), xdata_tensor.numpy())
     

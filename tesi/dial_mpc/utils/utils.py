@@ -184,8 +184,8 @@ def gs_quat_to_3x3(q: torch.Tensor) -> torch.Tensor:
     y = q[..., 2]
     z = q[..., 3]
     # compute scale factor
-    d = (q * q).sum(dim=-1)         # (...)
-    s = 2.0 / d                     # (...)
+    d = (q * q).sum(dim=-1)        
+    s = 2.0 / d                     
     xs = x * s
     ys = y * s
     zs = z * s

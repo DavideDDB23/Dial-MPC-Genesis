@@ -24,7 +24,7 @@ class BaseEnv:
             gs.init(backend=gs.gpu)
             torch.set_default_device("mps")
 
-         # create scene
+        # create scene, like as brax MJCF scene setup
         self.scene: Scene = gs.Scene(
             sim_options=gs.options.SimOptions(dt=config.dt, substeps=n_frames),
             viewer_options=gs.options.ViewerOptions(
@@ -49,7 +49,7 @@ class BaseEnv:
                 dt=config.dt,
                 constraint_solver=gs.constraint_solver.Newton,
                 enable_collision=True,
-                enable_joint_limit=True,
+                enable_joint_limit=True, # I set it to True, but maybe it's better to set it to False? because we enforce joint limits in act2joint e act2tau
             ),
             show_viewer=True,
         )
@@ -74,16 +74,14 @@ class BaseEnv:
         
         self.physical_joint_range = torch.stack(self.robot.get_dofs_limit(self.motor_dofs), dim=1)
         self.joint_range = self.physical_joint_range
-        
         lower_torque, upper_torque = self.robot.get_dofs_force_range(self.motor_dofs)
         self.joint_torque_range = torch.stack([lower_torque, upper_torque], dim=1)
-
         self._nv = self.robot.n_dofs   
         self._nq = self.robot.n_qs
         
-        #verificare se è corretto, forse usando tau direttamete da act2tau, non serve questo
-        self.robot.set_dofs_kp([self._config.kp] * len(self.motor_dofs), self.motor_dofs)
-        self.robot.set_dofs_kv([self._config.kd] * len(self.motor_dofs), self.motor_dofs)
+        if self._config.leg_control == "position":
+            self.robot.set_dofs_kp([self._config.kp] * len(self.motor_dofs), self.motor_dofs)
+            self.robot.set_dofs_kv([self._config.kd] * len(self.motor_dofs), self.motor_dofs)
 
     def create_robot(self):
         """
@@ -92,8 +90,6 @@ class BaseEnv:
         raise NotImplementedError
 
     def act2joint(self, act: torch.Tensor) -> torch.Tensor:
-        # act: (n_envs, n_actions) or (n_actions,) -> joint positions
-        # normalize to [0,1]
         act_normalized = (act * self._config.action_scale + 1.0) / 2.0
         # joint_range: (n_actions, 2)
         lower = self.joint_range[:, 0]
@@ -123,5 +119,10 @@ class BaseEnv:
         # PD control
         q_err = joint_target - q
         tau = self._config.kp * q_err - self._config.kd * qd
+        
+        tau = torch.clamp(
+            tau, self.joint_torque_range[:, 0], self.joint_torque_range[:, 1]
+        )
+
         return tau
 

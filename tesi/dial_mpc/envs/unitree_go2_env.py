@@ -1,10 +1,6 @@
 from dataclasses import dataclass
 from typing import Any, Dict, Sequence, Tuple, Union, List
 
-import numpy as np
-
-from functools import partial
-
 import mujoco
 import genesis.utils.mjcf as mjcf
 import torch
@@ -95,6 +91,7 @@ class UnitreeGo2Env(BaseEnv):
         # store as PyTorch tensor of int indices
         self._feet_site_id = torch.tensor(feet_site_id, dtype=torch.int32)
         
+                
         # find index of the RigidSolver in the simulation solver list
         self._rigid_solver_idx = None
         for idx, solver in enumerate(self.scene.sim.solvers):
@@ -127,7 +124,7 @@ class UnitreeGo2Env(BaseEnv):
 
     def pipeline_init(self, init_q: torch.Tensor, init_qvel: torch.Tensor, envs_idx: torch.Tensor = None):
         """
-        Initialize the simulation pipeline state in Genesis, analogous to Brax's pipeline_init.
+        Initialize the simulation pipeline state in Genesis
         """
         # environment indices for batched envs; reset only these indices
         b = envs_idx.numel()
@@ -155,7 +152,7 @@ class UnitreeGo2Env(BaseEnv):
         )
         # zero joint velocities
         self.robot.zero_all_dofs_velocity(envs_idx)
-        # return the fresh simulation state
+        # return the simulation state
         return self.scene.get_state()
 
     def reset(self, envs_idx: torch.Tensor = None) -> State:
@@ -318,7 +315,6 @@ class UnitreeGo2Env(BaseEnv):
         )
 
         # done condition
-        # compute body z-axis dot up-vector per environment
         up = torch.tensor([0.0, 0.0, 1.0], device=base_pos.device)
         rot_up = gs_rotate(up, base_quat)  # (b,3)
         done = (rot_up * up).sum(dim=-1) < 0
@@ -346,7 +342,7 @@ class UnitreeGo2Env(BaseEnv):
         )
 
     def _get_obs(self, sim_state, state_info: Dict[str, torch.Tensor], ctrl: torch.Tensor = None, envs_idx: torch.Tensor = None) -> torch.Tensor:
-        # fetch the RigidSolverState dynamically
+        # fetch the RigidSolverState
         rigid = sim_state.solvers_state[self._rigid_solver_idx]
         # full positions and velocities
         qpos_full = torch.as_tensor(rigid.qpos)
@@ -381,12 +377,12 @@ class UnitreeGo2Env(BaseEnv):
         Sample linear and angular velocity commands for environments that needs it.
         Returns two tensors of shape (lenght of envs_idx, 3): (lin_vel_cmd, ang_vel_cmd).
         """
-        # hardcoded ranges (min,max) for linear and angular velocity - same as Brax
-        lin_vel_x = [-1.5, 1.5]  # min max [m/s]
-        lin_vel_y = [-0.5, 0.5]  # min max [m/s]
-        ang_vel_yaw = [-1.5, 1.5]  # min max [rad/s]
+        # hardcoded ranges (min,max) for linear and angular velocity
+        lin_vel_x = [-1.5, 1.5]  
+        lin_vel_y = [-0.5, 0.5]  
+        ang_vel_yaw = [-1.5, 1.5]
         
-        # sample uniformly using gs_rand_float - match Brax's jax.random.uniform
+        # sample uniformly using gs_rand_float
         device = envs_idx.device
         batch_size = len(envs_idx)
         
@@ -394,7 +390,7 @@ class UnitreeGo2Env(BaseEnv):
         lin_y = gs_rand_float(lin_vel_y[0], lin_vel_y[1], batch_size, device)
         ang_z = gs_rand_float(ang_vel_yaw[0], ang_vel_yaw[1], batch_size, device)
         
-        # Create velocity commands in same format as Brax
+        # Create velocity commands in same format
         lin_vel_cmd = torch.stack([lin_x, lin_y, torch.zeros(batch_size, device=device)], dim=1)
         ang_vel_cmd = torch.stack([
             torch.zeros(batch_size, device=device),

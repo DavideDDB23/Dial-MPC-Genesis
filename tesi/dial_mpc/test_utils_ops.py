@@ -1,5 +1,4 @@
 import sys, os
-# add 'tesi' directory to path so we can import dial_mpc
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import torch
@@ -46,7 +45,7 @@ def test_gs_inv_rotate():
 
 
 def test_quat_to_3x3():
-    R = quat_to_3x3(q_z90)
+    R = gs_quat_to_3x3(q_z90)
     expected_R = torch.tensor([
         [0.0, -1.0, 0.0],
         [1.0,  0.0, 0.0],
