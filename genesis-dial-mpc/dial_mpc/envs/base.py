@@ -8,6 +8,7 @@ import numpy as np
 import jax.numpy as jp
 import dial_mpc.utils.math as math
 from jax import vmap
+import torch
 
 @struct.dataclass
 class Transform():
@@ -260,54 +261,54 @@ class PipelineEnv():
     Returns:
       Tuple of reordered (q, qd)
     """
-    # First 7 values (base pos and quat) stay the same
+      # First 7 values (base pos and quat) stay the same
     q_base = q_genesis[:7]
-    
-    # Get the joint positions from q_genesis - starts at index 7
+      
+      # Get the joint positions from q_genesis - starts at index 7
     q_joints = q_genesis[7:]
-    
+      
     # Genesis order is: [hip_FR, hip_FL, hip_RR, hip_RL, thigh_FR, thigh_FL, thigh_RR, thigh_RL, calf_FR, calf_FL, calf_RR, calf_RL]
     # We need to reorder to: [hip_FR, thigh_FR, calf_FR, hip_FL, thigh_FL, calf_FL, hip_RR, thigh_RR, calf_RR, hip_RL, thigh_RL, calf_RL]
-    
-    # Extract by joint type
+      
+      # Extract by joint type
     hips = q_joints[0:4]   # [FR, FL, RR, RL]
     thighs = q_joints[4:8]  # [FR, FL, RR, RL]
     calves = q_joints[8:12] # [FR, FL, RR, RL]
-    
-    # Reorder by leg
+      
+      # Reorder by leg
     q_joints_reordered = jp.concatenate([
-        jp.array([hips[0], thighs[0], calves[0]]),     # FR leg
-        jp.array([hips[1], thighs[1], calves[1]]),     # FL leg
-        jp.array([hips[2], thighs[2], calves[2]]),     # RR leg
-        jp.array([hips[3], thighs[3], calves[3]])      # RL leg
-    ])
-    
-    # Combine base and reordered joints
+          jp.array([hips[0], thighs[0], calves[0]]),     # FR leg
+          jp.array([hips[1], thighs[1], calves[1]]),     # FL leg
+          jp.array([hips[2], thighs[2], calves[2]]),     # RR leg
+          jp.array([hips[3], thighs[3], calves[3]])      # RL leg
+      ])
+      
+      # Combine base and reordered joints
     q_out = jp.concatenate([q_base, q_joints_reordered])
-    
-    # Similarly, we should reorder qd to match Brax/MuJoCo
-    # First 6 values (base lin/ang vel) stay the same
+      
+      # Similarly, we should reorder qd to match Brax/MuJoCo
+      # First 6 values (base lin/ang vel) stay the same
     qd_base = qd_genesis[:6]
-    
-    # The joint velocities are grouped by joint type in the same way
+      
+      # The joint velocities are grouped by joint type in the same way
     qd_joints = qd_genesis[6:]
-    
-    # Apply the same reordering as for positions
+      
+      # Apply the same reordering as for positions
     joint_vels_hips = qd_joints[0:4]
     joint_vels_thighs = qd_joints[4:8]
     joint_vels_calves = qd_joints[8:12]
-    
-    # Reorder by leg
+      
+      # Reorder by leg
     qd_joints_reordered = jp.concatenate([
-        jp.array([joint_vels_hips[0], joint_vels_thighs[0], joint_vels_calves[0]]),  # FR leg
-        jp.array([joint_vels_hips[1], joint_vels_thighs[1], joint_vels_calves[1]]),  # FL leg
-        jp.array([joint_vels_hips[2], joint_vels_thighs[2], joint_vels_calves[2]]),  # RR leg
-        jp.array([joint_vels_hips[3], joint_vels_thighs[3], joint_vels_calves[3]])   # RL leg
+          jp.array([joint_vels_hips[0], joint_vels_thighs[0], joint_vels_calves[0]]),  # FR leg
+          jp.array([joint_vels_hips[1], joint_vels_thighs[1], joint_vels_calves[1]]),  # FL leg
+          jp.array([joint_vels_hips[2], joint_vels_thighs[2], joint_vels_calves[2]]),  # RR leg
+          jp.array([joint_vels_hips[3], joint_vels_thighs[3], joint_vels_calves[3]])   # RL leg
     ])
-    
-    # Combine base and reordered joint velocities
+      
+      # Combine base and reordered joint velocities
     qd_out = jp.concatenate([qd_base, qd_joints_reordered])
-    
+
     return q_out, qd_out
   
   def _create_link_transform_and_motion(self, link_pos_raw, link_quat_raw, link_lin_vel_raw, link_ang_vel_raw):
@@ -322,15 +323,15 @@ class PipelineEnv():
     Returns:
       Tuple of (Transform, Motion, ordered link indices)
     """
-    # Create reordering indices for links
-    # Base stays at index 0
+      # Create reordering indices for links
+      # Base stays at index 0
     base_idx = 0
-    
-    # FR leg: hip, thigh, calf
+      
+      # FR leg: hip, thigh, calf
     fr_hip_idx = 1
     fr_thigh_idx = 5
     fr_calf_idx = 9
-    
+      
     # FL leg: hip, thigh, calf
     fl_hip_idx = 2
     fl_thigh_idx = 6
@@ -363,7 +364,7 @@ class PipelineEnv():
     
     # Create Transform with reordered positions and orientations
     x = Transform(pos=link_pos_ordered, rot=link_quat_ordered)
-    
+
     # Create Motion with reordered velocities
     cvel = Motion(vel=link_lin_vel_ordered, ang=link_ang_vel_ordered)
     
@@ -391,11 +392,29 @@ class PipelineEnv():
     
     # Transform the offset to world frame
     offset = Transform.create(pos=offset_local)
-    
+
     # Transform velocities by offset
     xd = offset.vmap().do(cvel)
-    
+
     return xd
+        
+        # Function to transform the offset from local to world frame using the link's orientation
+  def transform_offset_to_world(self, offset, quat):
+            # Convert quaternion to rotation matrix
+            w, x, y, z = quat
+            xx, yy, zz = x * x, y * y, z * z
+            wx, wy, wz = w * x, w * y, w * z
+            xy, xz, yz = x * y, x * z, y * z
+            
+            rot_mat = jp.array([
+                [1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy)],
+                [2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx)],
+                [2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy)]
+            ])
+            
+            # Apply rotation matrix to offset
+            return jp.matmul(rot_mat, offset)
+        
   
   def _calculate_site_positions(self, link_pos_ordered, link_quat_ordered):
     """Calculate site positions (feet and IMU).
@@ -405,11 +424,20 @@ class PipelineEnv():
       link_quat_ordered: Reordered link quaternions
       
     Returns:
-      Array of site positions
+      Array of site positions in order [IMU, FR, FL, RR, RL]
     """
+    # Calculate IMU position
+    imu_offset = jp.array([-0.02557, 0.0, 0.04232])
+    imu_site_pos = link_pos_ordered[0] + self.transform_offset_to_world(imu_offset, link_quat_ordered[0])  # base link
+    
+    # Get foot positions from the solver
     solver = self.scene.sim.solvers[self._rigid_solver_idx]
-    geom_pos = solver.get_geoms_pos(self._feet_site_id)   
-    return self._to_jax(geom_pos)
+    feet_pos = self._to_jax(solver.get_geoms_pos(self._feet_site_id_brax))
+  
+    # Combine IMU and reordered feet positions
+    site_positions = jp.concatenate([jp.expand_dims(imu_site_pos, 0), feet_pos])
+    
+    return site_positions
 
   
   def _create_base_state(self, q_out, qd_out, ctrl):
@@ -447,9 +475,9 @@ class PipelineEnv():
     
     # Calculate site positions
     site_xpos = self._calculate_site_positions(x.pos, x.rot)
-    
+
     return BaseState(q=q_out, qd=qd_out, x=x, xd=xd, ctrl=ctrl, site_xpos=site_xpos)
-  
+
   def pipeline_init(
     self,
     q: jax.Array,
@@ -497,7 +525,7 @@ class PipelineEnv():
     
     # Create and return the base state
     return self._create_base_state(q_out, qd_out, ctrl)
-
+  
   def pipeline_step(self, pipeline_state: BaseState, action: jax.Array) -> BaseState:
     """Step the physics simulation using the provided action.
     
@@ -525,9 +553,9 @@ class PipelineEnv():
     
     # Reorder to match Brax/MuJoCo convention
     q_out, qd_out = self._reorder_genesis_to_brax(q_genesis, qd_genesis)
-    
+
     # Keep track of applied control
     ctrl = action
-    
+        
     # Create and return the updated base state
     return self._create_base_state(q_out, qd_out, ctrl)  

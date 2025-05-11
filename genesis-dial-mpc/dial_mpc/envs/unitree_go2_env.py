@@ -74,6 +74,12 @@ class UnitreeGo2Env(BaseEnv):
                 [-2.3, -1.3],
             ]
         )
+        feet_site_brax = [
+            "FR_foot",
+            "FL_foot",
+            "RR_foot",
+            "RL_foot",
+        ]
         feet_site = [
             "FL_foot",
             "FR_foot",
@@ -86,6 +92,13 @@ class UnitreeGo2Env(BaseEnv):
         ]
         assert not any(id_ == -1 for id_ in feet_site_id), "Site not found."
         self._feet_site_id = jnp.array(feet_site_id)
+
+        feet_site_id_brax = [
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE.value, f)
+            for f in feet_site_brax
+        ]
+        assert not any(id_ == -1 for id_ in feet_site_id_brax), "Site not found."
+        self._feet_site_id_brax = jnp.array(feet_site_id_brax)
 
         # find index of the RigidSolver in the simulation solver list
         self._rigid_solver_idx = None
