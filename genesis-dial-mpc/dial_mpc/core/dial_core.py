@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import importlib
 import sys
 
+sys.path.insert(0, os.path.abspath('genesis-dial-mpc'))
+
 import yaml
 import argparse
 from tqdm import tqdm
@@ -24,12 +26,6 @@ from dial_mpc.core.dial_config import DialConfig
 
 plt.style.use("science")
 
-# Tell XLA to use Triton GEMM, this improves steps/sec by ~30% on some GPUs
-xla_flags = os.environ.get("XLA_FLAGS", "")
-xla_flags += " --xla_gpu_triton_gemm_any=True"
-os.environ["XLA_FLAGS"] = xla_flags
-
-
 def rollout_us(step_env, state, us):
     def step(state, u):
         state = step_env(state, u)
@@ -49,7 +45,7 @@ class MBDPI:
     def __init__(self, args: DialConfig, env):
         self.args = args
         self.env = env
-        self.nu = env.action_size
+        self.nu = len(env.motor_dofs)
 
         self.update_fn = {
             "mppi": softmax_update,
@@ -204,10 +200,11 @@ def main():
     print(emoji.emojize(":rocket:") + "Creating environment")
     env = dial_envs.get_environment(dial_config.env_name, config=env_config)
     step_env = jax.jit(env.step)
+    reset_env = jax.jit(env.reset)
     mbdpi = MBDPI(dial_config, env)
 
     rng, rng_reset = jax.random.split(rng)
-    state_init = env.reset(rng_reset)
+    state_init = reset_env(rng_reset)
 
     YN = jnp.zeros([dial_config.Hnode + 1, mbdpi.nu])
 
@@ -253,24 +250,11 @@ def main():
     rew = jnp.array(rews).mean()
     print(f"mean reward = {rew:.2e}")
 
-    # save us
-    # us = jnp.array(us)
-    # jnp.save("./results/us.npy", us)
-
     # create result dir if not exist
     if not os.path.exists(dial_config.output_dir):
         os.makedirs(dial_config.output_dir)
 
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-
-    # plot rews_plan
-    # plt.plot(rews_plan)
-    # plt.savefig(os.path.join(dial_config.output_dir,
-    #             f"{timestamp}_rews_plan.pdf"))
-
-    # host webpage with flask
-
-    # show the rollout
 
     # save the rollout
     data = []
@@ -281,8 +265,8 @@ def main():
             jnp.concatenate(
                 [
                     jnp.array([i]),
-                    pipeline_state.qpos,
-                    pipeline_state.qvel,
+                    pipeline_state.q,
+                    pipeline_state.qd,
                     pipeline_state.ctrl,
                 ]
             )

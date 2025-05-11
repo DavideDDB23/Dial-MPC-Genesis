@@ -55,6 +55,7 @@ class BaseEnv(PipelineEnv):
                 enable_joint_limit=True,
             ),
             show_viewer=True,
+            show_FPS=False,
         )
 
         # add an infinite plane at z=0 as the ground
@@ -86,9 +87,8 @@ class BaseEnv(PipelineEnv):
         self._nv = self.robot.n_dofs   
         self._nq = self.robot.n_qs
 
-        if self._config.leg_control == "position":
-            self.robot.set_dofs_kp([self._config.kp] * len(self.motor_dofs), self.motor_dofs)
-            self.robot.set_dofs_kv([self._config.kd] * len(self.motor_dofs), self.motor_dofs)
+        self.robot.set_dofs_kp([self._config.kp] * len(self.motor_dofs), self.motor_dofs)
+        self.robot.set_dofs_kv([self._config.kd] * len(self.motor_dofs), self.motor_dofs)
 
 
     def create_robot(self):
@@ -116,9 +116,9 @@ class BaseEnv(PipelineEnv):
     def act2tau(self, act: jax.Array, pipline_state) -> jax.Array:
         joint_target = self.act2joint(act)
 
-        q = pipline_state.qpos[7:]
+        q = pipline_state.q[7:] # qpos
         q = q[: len(joint_target)]
-        qd = pipline_state.qvel[6:]
+        qd = pipline_state.qd[6:] # qvel
         qd = qd[: len(joint_target)]
         q_err = joint_target - q
         tau = self._config.kp * q_err - self._config.kd * qd
