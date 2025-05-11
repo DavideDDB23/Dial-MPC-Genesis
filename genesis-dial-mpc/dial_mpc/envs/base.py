@@ -248,7 +248,7 @@ class PipelineEnv():
   
   def _to_jax(self, t):
     """Convert torch tensors to jax arrays."""
-    return jp.array(t.numpy()) if hasattr(t, 'numpy') else jp.array(t)
+    return jp.array(t)
   
   def _reorder_genesis_to_brax(self, q_genesis, qd_genesis):
     """Reorder genesis state to match Brax/MuJoCo ordering.
@@ -407,70 +407,10 @@ class PipelineEnv():
     Returns:
       Array of site positions
     """
-    # Look for sites by name
-    site_names = ["imu", "FR_foot", "FL_foot", "RR_foot", "RL_foot"]
-    site_offset_local = jp.array([-0.002, 0.0, -0.213])  # Offset in the link's local frame
-    
-    # Function to transform the offset from local to world frame using the link's orientation
-    def transform_offset_to_world(offset, quat):
-        # Convert quaternion to rotation matrix
-        w, x, y, z = quat
-        xx, yy, zz = x * x, y * y, z * z
-        wx, wy, wz = w * x, w * y, w * z
-        xy, xz, yz = x * y, x * z, y * z
-        
-        rot_mat = jp.array([
-            [1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy)],
-            [2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx)],
-            [2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy)]
-        ])
-        
-        # Apply rotation matrix to offset
-        return jp.matmul(rot_mat, offset)
-    
-    # First check if the robot entity has a get_site_pos method
-    if hasattr(self.robot, 'get_site_pos'):
-        # If there's a direct method to get site positions
-        site_xpos_raw = []
-        
-        for site_name in site_names:
-            try:
-                site_pos = self._to_jax(self.robot.get_site_pos(site_name))
-                site_xpos_raw.append(site_pos)
-            except:
-                # If site doesn't exist, use the corresponding calf link position
-                # plus the site offset defined in the MJCF, transformed by the link's orientation
-                if site_name == "imu":
-                    # Position for IMU site on the base
-                    imu_offset = jp.array([-0.02557, 0.0, 0.04232])  # From MJCF definition
-                    site_pos = link_pos_ordered[0] + transform_offset_to_world(imu_offset, link_quat_ordered[0])  # base link
-                elif "FR" in site_name:
-                    site_pos = link_pos_ordered[3] + transform_offset_to_world(site_offset_local, link_quat_ordered[3])  # FR_calf
-                elif "FL" in site_name:
-                    site_pos = link_pos_ordered[6] + transform_offset_to_world(site_offset_local, link_quat_ordered[6])  # FL_calf
-                elif "RR" in site_name:
-                    site_pos = link_pos_ordered[9] + transform_offset_to_world(site_offset_local, link_quat_ordered[9])  # RR_calf
-                elif "RL" in site_name:
-                    site_pos = link_pos_ordered[12] + transform_offset_to_world(site_offset_local, link_quat_ordered[12])  # RL_calf
-                site_xpos_raw.append(site_pos)
-        
-        site_xpos = jp.stack(site_xpos_raw)
-    else:
-        print("Not get sit pos")
-        # If there's no method to get site positions directly,
-        # approximate them using the calf link positions plus the site offset transformed by the link orientation
-        imu_offset = jp.array([-0.02557, 0.0, 0.04232])  # IMU offset from base
+    solver = self.scene.sim.solvers[self._rigid_solver_idx]
+    geom_pos = solver.get_geoms_pos(self._feet_site_id)   
+    return self._to_jax(geom_pos)
 
-        # Calculate site positions by transforming the offset to world frame
-        site_xpos = jp.stack([
-            link_pos_ordered[0] + transform_offset_to_world(imu_offset, link_quat_ordered[0]),  # IMU on base
-            link_pos_ordered[3] + transform_offset_to_world(site_offset_local, link_quat_ordered[3]),  # FR_calf
-            link_pos_ordered[6] + transform_offset_to_world(site_offset_local, link_quat_ordered[6]),  # FL_calf
-            link_pos_ordered[9] + transform_offset_to_world(site_offset_local, link_quat_ordered[9]),  # RR_calf
-            link_pos_ordered[12] + transform_offset_to_world(site_offset_local, link_quat_ordered[12])  # RL_calf
-        ])
-    
-    return site_xpos
   
   def _create_base_state(self, q_out, qd_out, ctrl):
     """Create a BaseState object from current robot state.
@@ -528,10 +468,6 @@ class PipelineEnv():
     Returns:
       BaseState object
     """
-    # The Genesis DOF order is different from the MuJoCo keyframe order
-    # MuJoCo: [base_pos(3), base_quat(4), FR_hip, FR_thigh, FR_calf, FL_hip, FL_thigh, FL_calf, ...]
-    # Genesis: [base_pos(3), base_quat(4), hip_FR, hip_FL, hip_RR, hip_RL, thigh_FR, thigh_FL, ...]
-    
     # Set initial base pose 
     self.robot.set_pos(q[:3], zero_velocity=True)
     self.robot.set_quat(q[3:7], zero_velocity=True)
@@ -573,7 +509,7 @@ class PipelineEnv():
       Updated BaseState
     """
     # Apply action to robot based on control mode
-    leg_control = getattr(self, "_config", None) and getattr(self._config, "leg_control", "position")
+    leg_control = self._config.leg_control
     
     if leg_control == "position":
         self.robot.control_dofs_position(position=action, dofs_idx_local=self.motor_dofs)
