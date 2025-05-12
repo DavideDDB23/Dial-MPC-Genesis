@@ -261,21 +261,21 @@ class PipelineEnv():
     Returns:
       Tuple of reordered (q, qd)
     """
-      # First 7 values (base pos and quat) stay the same
+    # First 7 values (base pos and quat) stay the same
     q_base = q_genesis[:7]
       
-      # Get the joint positions from q_genesis - starts at index 7
+    # Get the joint positions from q_genesis - starts at index 7
     q_joints = q_genesis[7:]
       
     # Genesis order is: [hip_FR, hip_FL, hip_RR, hip_RL, thigh_FR, thigh_FL, thigh_RR, thigh_RL, calf_FR, calf_FL, calf_RR, calf_RL]
     # We need to reorder to: [hip_FR, thigh_FR, calf_FR, hip_FL, thigh_FL, calf_FL, hip_RR, thigh_RR, calf_RR, hip_RL, thigh_RL, calf_RL]
       
-      # Extract by joint type
+     # Extract by joint type
     hips = q_joints[0:4]   # [FR, FL, RR, RL]
     thighs = q_joints[4:8]  # [FR, FL, RR, RL]
     calves = q_joints[8:12] # [FR, FL, RR, RL]
       
-      # Reorder by leg
+    # Reorder by leg
     q_joints_reordered = jp.concatenate([
           jp.array([hips[0], thighs[0], calves[0]]),     # FR leg
           jp.array([hips[1], thighs[1], calves[1]]),     # FL leg
@@ -283,22 +283,22 @@ class PipelineEnv():
           jp.array([hips[3], thighs[3], calves[3]])      # RL leg
       ])
       
-      # Combine base and reordered joints
+    # Combine base and reordered joints
     q_out = jp.concatenate([q_base, q_joints_reordered])
       
-      # Similarly, we should reorder qd to match Brax/MuJoCo
-      # First 6 values (base lin/ang vel) stay the same
+    # Similarly, we should reorder qd to match Brax/MuJoCo
+    # First 6 values (base lin/ang vel) stay the same
     qd_base = qd_genesis[:6]
-      
-      # The joint velocities are grouped by joint type in the same way
+    
+    # The joint velocities are grouped by joint type in the same way
     qd_joints = qd_genesis[6:]
       
-      # Apply the same reordering as for positions
+    # Apply the same reordering as for positions
     joint_vels_hips = qd_joints[0:4]
     joint_vels_thighs = qd_joints[4:8]
     joint_vels_calves = qd_joints[8:12]
       
-      # Reorder by leg
+    # Reorder by leg
     qd_joints_reordered = jp.concatenate([
           jp.array([joint_vels_hips[0], joint_vels_thighs[0], joint_vels_calves[0]]),  # FR leg
           jp.array([joint_vels_hips[1], joint_vels_thighs[1], joint_vels_calves[1]]),  # FL leg
@@ -323,11 +323,11 @@ class PipelineEnv():
     Returns:
       Tuple of (Transform, Motion, ordered link indices)
     """
-      # Create reordering indices for links
-      # Base stays at index 0
+    # Create reordering indices for links
+    # Base stays at index 0
     base_idx = 0
       
-      # FR leg: hip, thigh, calf
+    # FR leg: hip, thigh, calf
     fr_hip_idx = 1
     fr_thigh_idx = 5
     fr_calf_idx = 9
@@ -398,22 +398,22 @@ class PipelineEnv():
 
     return xd
         
-        # Function to transform the offset from local to world frame using the link's orientation
+  # Function to transform the offset from local to world frame using the link's orientation
   def transform_offset_to_world(self, offset, quat):
-            # Convert quaternion to rotation matrix
-            w, x, y, z = quat
-            xx, yy, zz = x * x, y * y, z * z
-            wx, wy, wz = w * x, w * y, w * z
-            xy, xz, yz = x * y, x * z, y * z
-            
-            rot_mat = jp.array([
-                [1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy)],
-                [2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx)],
-                [2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy)]
-            ])
-            
-            # Apply rotation matrix to offset
-            return jp.matmul(rot_mat, offset)
+    # Convert quaternion to rotation matrix
+    w, x, y, z = quat
+    xx, yy, zz = x * x, y * y, z * z
+    wx, wy, wz = w * x, w * y, w * z
+    xy, xz, yz = x * y, x * z, y * z
+    
+    rot_mat = jp.array([
+        [1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy)],
+        [2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx)],
+        [2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy)]
+    ])
+    
+    # Apply rotation matrix to offset
+    return jp.matmul(rot_mat, offset)
         
   
   def _calculate_site_positions(self, link_pos_ordered, link_quat_ordered):
@@ -438,45 +438,6 @@ class PipelineEnv():
     site_positions = jp.concatenate([jp.expand_dims(imu_site_pos, 0), feet_pos])
     
     return site_positions
-
-  
-  def _create_base_state(self, q_out, qd_out, ctrl):
-    """Create a BaseState object from current robot state.
-    
-    Args:
-      q_out: Reordered joint positions
-      qd_out: Reordered joint velocities
-      ctrl: Control command
-      
-    Returns:
-      BaseState object
-    """
-    # Get link positions, orientations, and velocities
-    link_pos_raw = self._to_jax(self.robot.get_links_pos())
-    link_quat_raw = self._to_jax(self.robot.get_links_quat())
-    link_lin_vel_raw = self._to_jax(self.robot.get_links_vel())
-    link_ang_vel_raw = self._to_jax(self.robot.get_links_ang())
-    
-    # Create transform and motion for links
-    x, cvel, ordered_indices = self._create_link_transform_and_motion(
-        link_pos_raw, link_quat_raw, link_lin_vel_raw, link_ang_vel_raw
-    )
-    
-    # Get inertial properties
-    inertial_positions = []
-    for i in range(len(self.robot.links)):
-        link = self.robot.links[i]
-        inertial_pos_local = link.inertial_pos
-        inertial_pos_array = self._to_jax(inertial_pos_local)
-        inertial_positions.append(inertial_pos_array)
-    
-    # Calculate link velocities
-    xd = self._calculate_xd(cvel, inertial_positions, ordered_indices)
-    
-    # Calculate site positions
-    site_xpos = self._calculate_site_positions(x.pos, x.rot)
-
-    return BaseState(q=q_out, qd=qd_out, x=x, xd=xd, ctrl=ctrl, site_xpos=site_xpos)
 
   def pipeline_init(
     self,
@@ -523,9 +484,26 @@ class PipelineEnv():
     # Create a ctrl array filled with zeros if not provided
     ctrl = jp.zeros(len(self.motor_dofs))
     
+     # Get link positions, orientations, and velocities
+    link_pos_raw = self._to_jax(self.robot.get_links_pos())
+    link_quat_raw = self._to_jax(self.robot.get_links_quat())
+    link_lin_vel_raw = self._to_jax(self.robot.get_links_vel())
+    link_ang_vel_raw = self._to_jax(self.robot.get_links_ang())
+    
+    # Create transform and motion for links
+    x, cvel, ordered_indices = self._create_link_transform_and_motion(
+        link_pos_raw, link_quat_raw, link_lin_vel_raw, link_ang_vel_raw
+    )
+    
+    # Calculate link velocities
+    xd = self._calculate_xd(cvel, self._cached_inertial_positions, ordered_indices)
+    
+    # Calculate site positions
+    site_xpos = self._calculate_site_positions(x.pos, x.rot)
+
     # Create and return the base state
-    return self._create_base_state(q_out, qd_out, ctrl)
-  
+    return BaseState(q=q_out, qd=qd_out, x=x, xd=xd, ctrl=ctrl, site_xpos=site_xpos)  
+    
   def pipeline_step(self, pipeline_state: BaseState, action: jax.Array) -> BaseState:
     """Step the physics simulation using the provided action.
     
@@ -537,9 +515,7 @@ class PipelineEnv():
       Updated BaseState
     """
     # Apply action to robot based on control mode
-    leg_control = self._config.leg_control
-    
-    if leg_control == "position":
+    if self._config.leg_control == "position":
         self.robot.control_dofs_position(position=action, dofs_idx_local=self.motor_dofs)
     else:  # torque (force) control
         self.robot.control_dofs_force(force=action, dofs_idx_local=self.motor_dofs)
@@ -547,15 +523,29 @@ class PipelineEnv():
     # Step the physics engine
     self.scene.step()
 
-    # Get generalized coordinates and velocities from Genesis
+      # Get generalized coordinates and velocities from Genesis
     q_genesis = self._to_jax(self.robot.get_qpos())
     qd_genesis = self._to_jax(self.robot.get_dofs_velocity())
     
     # Reorder to match Brax/MuJoCo convention
     q_out, qd_out = self._reorder_genesis_to_brax(q_genesis, qd_genesis)
 
-    # Keep track of applied control
-    ctrl = action
-        
-    # Create and return the updated base state
-    return self._create_base_state(q_out, qd_out, ctrl)  
+     # Get link positions, orientations, and velocities
+    link_pos_raw = self._to_jax(self.robot.get_links_pos())
+    link_quat_raw = self._to_jax(self.robot.get_links_quat())
+    link_lin_vel_raw = self._to_jax(self.robot.get_links_vel())
+    link_ang_vel_raw = self._to_jax(self.robot.get_links_ang())
+    
+    # Create transform and motion for links
+    x, cvel, ordered_indices = self._create_link_transform_and_motion(
+        link_pos_raw, link_quat_raw, link_lin_vel_raw, link_ang_vel_raw
+    )
+    
+    # Calculate link velocities
+    xd = self._calculate_xd(cvel, self._cached_inertial_positions, ordered_indices)
+    
+    # Calculate site positions
+    site_xpos = self._calculate_site_positions(x.pos, x.rot)
+
+    # Create and return the base state
+    return BaseState(q=q_out, qd=qd_out, x=x, xd=xd, ctrl=action, site_xpos=site_xpos)  

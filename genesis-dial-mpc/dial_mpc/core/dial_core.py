@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import importlib
 import sys
 
-sys.path.insert(0, os.path.abspath('genesis-dial-mpc'))
+sys.path.insert(0, os.path.abspath('Dial-MPC-Genesis/genesis-dial-mpc'))
 
 import yaml
 import argparse
@@ -245,6 +245,7 @@ def main():
             rews_plan.append(info["rews"][-1].mean())
             infos.append(info)
             freq = 1 / (time.time() - t0)
+            print(f"rew: {state.reward:.2e}")
             pbar.set_postfix({"rew": f"{state.reward:.2e}", "freq": f"{freq:.2f}"})
 
     rew = jnp.array(rews).mean()

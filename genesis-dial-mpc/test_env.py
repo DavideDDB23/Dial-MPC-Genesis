@@ -171,7 +171,7 @@ if __name__ == '__main__':
 
     env = UnitreeGo2Env(cfg)
 
-    gs.tools.run_in_another_thread(fn=run_sim_test_reset, args=(env, 10))
+    gs.tools.run_in_another_thread(fn=run_deterministic_test, args=(env, 100))
     
     env.scene._visualizer._viewer._pyrender_viewer._renderer.dpscale = 1
 

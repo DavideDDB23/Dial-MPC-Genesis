@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.abspath('genesis-dial-mpc'))
 import jax
 import jax.numpy as jnp
 from functools import partial
-
+import numpy as np
 import genesis as gs
 from genesis.engine.entities.rigid_entity import RigidEntity
 from genesis.engine.scene import Scene
@@ -89,7 +89,13 @@ class BaseEnv(PipelineEnv):
 
         self.robot.set_dofs_kp([self._config.kp] * len(self.motor_dofs), self.motor_dofs)
         self.robot.set_dofs_kv([self._config.kd] * len(self.motor_dofs), self.motor_dofs)
-
+        
+        # Cache inertial positions during initialization since they don't change
+        inertial_positions = []
+        for i in range(len(self.robot.links)):
+            link = self.robot.links[i]
+            inertial_positions.append(np.array(link.inertial_pos))
+        self._cached_inertial_positions = [jnp.array(pos) for pos in inertial_positions]
 
     def create_robot(self):
         """
