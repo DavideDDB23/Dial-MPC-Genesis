@@ -252,7 +252,7 @@ class PipelineEnv():
     return jp.array(t)
   
   def _reorder_genesis_to_brax(self, q_genesis, qd_genesis):
-    """Reorder genesis state to match Brax/MuJoCo ordering.
+    """Reorder genesis state to match Brax ordering.
     
     Args:
       q_genesis: Genesis generalized coordinates
@@ -268,9 +268,9 @@ class PipelineEnv():
     q_joints = q_genesis[7:]
       
     # Genesis order is: [hip_FR, hip_FL, hip_RR, hip_RL, thigh_FR, thigh_FL, thigh_RR, thigh_RL, calf_FR, calf_FL, calf_RR, calf_RL]
-    # We need to reorder to: [hip_FR, thigh_FR, calf_FR, hip_FL, thigh_FL, calf_FL, hip_RR, thigh_RR, calf_RR, hip_RL, thigh_RL, calf_RL]
+    # Brax order is: [hip_FR, thigh_FR, calf_FR, hip_FL, thigh_FL, calf_FL, hip_RR, thigh_RR, calf_RR, hip_RL, thigh_RL, calf_RL]
       
-     # Extract by joint type
+    # Extract by joint type
     hips = q_joints[0:4]   # [FR, FL, RR, RL]
     thighs = q_joints[4:8]  # [FR, FL, RR, RL]
     calves = q_joints[8:12] # [FR, FL, RR, RL]
@@ -286,7 +286,7 @@ class PipelineEnv():
     # Combine base and reordered joints
     q_out = jp.concatenate([q_base, q_joints_reordered])
       
-    # Similarly, we should reorder qd to match Brax/MuJoCo
+    # Reorder qd to match Brax
     # First 6 values (base lin/ang vel) stay the same
     qd_base = qd_genesis[:6]
     
@@ -306,7 +306,7 @@ class PipelineEnv():
           jp.array([joint_vels_hips[3], joint_vels_thighs[3], joint_vels_calves[3]])   # RL leg
     ])
       
-      # Combine base and reordered joint velocities
+    # Combine base and reordered joint velocities
     qd_out = jp.concatenate([qd_base, qd_joints_reordered])
 
     return q_out, qd_out
@@ -370,33 +370,33 @@ class PipelineEnv():
     
     return x, cvel, ordered_indices
   
-  def _calculate_xd(self, cvel, inertial_positions, ordered_indices):
+  def _calculate_xd(self, cvel: Motion, inertial_positions_local: jax.Array, ordered_indices: list, link_orientations_world: jax.Array):
     """Calculate link velocities in the center of mass frame.
     
     Args:
-      cvel: Link velocities
-      inertial_positions: Inertial positions for all links
+      cvel: Link velocities (at link origin, in world frame)
+      inertial_positions_local: Inertial positions (CoM offset from link origin, in local link frame)
       ordered_indices: Ordered indices for reordering links
+      link_orientations_world: Orientations of the links in the world frame (x.rot)
       
     Returns:
       Motion object with velocities transformed to COM frame
     """
-    # Reorder inertial positions the same way as links
-    inertial_positions_ordered = [inertial_positions[idx] for idx in ordered_indices]
-    
-    # Stack the reordered inertial positions
-    link_com_local = jp.stack(inertial_positions_ordered)
-    
-    # Compute the offset - in local frame the offset is negative of inertial pos
-    offset_local = -link_com_local
-    
-    # Transform the offset to world frame
-    offset = Transform.create(pos=offset_local)
+    # inertial_positions_local is _cached_inertial_positions, which is r_OC_L (Origin to CoM, local)
+    # r_OC_L is the position of CoM of the link measured w.r.to the link origin, local to the link frame
+    r_OC_L_ordered = inertial_positions_local[jp.array(ordered_indices)] # (num_links, 3)
 
-    # Transform velocities by offset
-    xd = offset.vmap().do(cvel)
+    # Rotate r_OC_L to r_OC_W (Origin to CoM, world)
+    # link_orientations_world is x.rot (num_links, 4)
+    r_OC_W_ordered = jax.vmap(math.rotate)(r_OC_L_ordered, link_orientations_world) # (num_links, 3)
 
-    return xd
+    # Calculate CoM velocity: v_C_W = v_O_W + ω_W × r_OC_W
+    # cvel.vel is v_O_W (num_links, 3)
+    # cvel.ang is ω_W (num_links, 3)
+    vel_xd = cvel.vel + jax.vmap(jp.cross)(cvel.ang, r_OC_W_ordered)
+    ang_xd = cvel.ang # Angular velocity of the CoM is the same as the link
+
+    return Motion(vel=vel_xd, ang=ang_xd)
         
   # Function to transform the offset from local to world frame using the link's orientation
   def transform_offset_to_world(self, offset, quat):
@@ -481,10 +481,10 @@ class PipelineEnv():
     # Reorder to match Brax/MuJoCo convention
     q_out, qd_out = self._reorder_genesis_to_brax(q_genesis, qd_genesis)
     
-    # Create a ctrl array filled with zeros if not provided
+    # Create a ctrl array filled with zeros, no action to do
     ctrl = jp.zeros(len(self.motor_dofs))
     
-     # Get link positions, orientations, and velocities
+    # Get link positions, orientations, and velocities
     link_pos_raw = self._to_jax(self.robot.get_links_pos())
     link_quat_raw = self._to_jax(self.robot.get_links_quat())
     link_lin_vel_raw = self._to_jax(self.robot.get_links_vel())
@@ -496,7 +496,8 @@ class PipelineEnv():
     )
     
     # Calculate link velocities
-    xd = self._calculate_xd(cvel, self._cached_inertial_positions, ordered_indices)
+    cached_inertial_positions_jax = jp.asarray(self._cached_inertial_positions)
+    xd = self._calculate_xd(cvel, cached_inertial_positions_jax, ordered_indices, x.rot)
     
     # Calculate site positions
     site_xpos = self._calculate_site_positions(x.pos, x.rot)
@@ -523,14 +524,14 @@ class PipelineEnv():
     # Step the physics engine
     self.scene.step()
 
-      # Get generalized coordinates and velocities from Genesis
+    # Get generalized coordinates and velocities from Genesis
     q_genesis = self._to_jax(self.robot.get_qpos())
     qd_genesis = self._to_jax(self.robot.get_dofs_velocity())
     
-    # Reorder to match Brax/MuJoCo convention
+    # Reorder to match Brax
     q_out, qd_out = self._reorder_genesis_to_brax(q_genesis, qd_genesis)
 
-     # Get link positions, orientations, and velocities
+    # Get link positions, orientations, and velocities
     link_pos_raw = self._to_jax(self.robot.get_links_pos())
     link_quat_raw = self._to_jax(self.robot.get_links_quat())
     link_lin_vel_raw = self._to_jax(self.robot.get_links_vel())
@@ -542,7 +543,8 @@ class PipelineEnv():
     )
     
     # Calculate link velocities
-    xd = self._calculate_xd(cvel, self._cached_inertial_positions, ordered_indices)
+    cached_inertial_positions_jax = jp.asarray(self._cached_inertial_positions)
+    xd = self._calculate_xd(cvel, cached_inertial_positions_jax, ordered_indices, x.rot)
     
     # Calculate site positions
     site_xpos = self._calculate_site_positions(x.pos, x.rot)

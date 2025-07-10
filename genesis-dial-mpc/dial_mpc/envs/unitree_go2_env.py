@@ -130,6 +130,7 @@ class UnitreeGo2Env(BaseEnv):
 
         self.motor_dofs: list[int] = [self.robot.get_joint(name).dof_idx_local for name in dof_names]
 
+    @partial(jax.jit, static_argnums=(0,))
     def reset(self, rng: jax.Array) -> base.State:  # pytype: disable=signature-mismatch
         rng, key = jax.random.split(rng)
 

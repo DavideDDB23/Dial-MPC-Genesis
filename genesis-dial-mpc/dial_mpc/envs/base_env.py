@@ -73,7 +73,6 @@ class BaseEnv(PipelineEnv):
                 continue
             self.rigid_solver = solver
 
-        # build batched simulation for multiple environments
         self.scene.build() 
 
         # joint limit definitions
